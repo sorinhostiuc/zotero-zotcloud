@@ -1,0 +1,33 @@
+{
+  "name": "zotero-zotcloud",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Sync your Zotero library to cloud storage providers (Google Drive, Dropbox, pCloud, WebDAV)",
+  "config": {
+    "addonName": "ZotCloud",
+    "addonID": "zotcloud@sorin.hostiuc",
+    "addonRef": "zotcloud",
+    "addonInstance": "ZotCloud"
+  },
+  "scripts": {
+    "start": "zotero-plugin serve",
+    "build": "zotero-plugin build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mapispev/zotero-zotcloud.git"
+  },
+  "dependencies": {
+    "zotero-plugin-toolkit": "^5.1.2"
+  },
+  "devDependencies": {
+    "jsdom": "^28.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
+    "zotero-plugin-scaffold": "^0.8.3",
+    "zotero-types": "^4.1.2"
+  }
+}

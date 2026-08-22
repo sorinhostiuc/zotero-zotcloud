@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Cloud shape -->
+  <path d="M 9 24 Q 9 18 13.5 16.5 Q 15 10 21 10 Q 25.5 10 27 12 Q 31.5 12 33 15 Q 39 15 39 22 Q 39 26 36 27 L 12 27 Q 9 26 9 24 Z" fill="#378add" stroke="none"/>
+
+  <!-- Sync arrows -->
+  <g transform="translate(24, 21)" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Top right arrow -->
+    <path d="M 3 -4.5 L 6 -1.5 L 4.5 1.5" />
+    <!-- Bottom left arrow -->
+    <path d="M -3 4.5 L -6 1.5 L -4.5 -1.5" />
+    <!-- Connecting arc -->
+    <circle cx="0" cy="0" r="6" fill="none"/>
+  </g>
+</svg>

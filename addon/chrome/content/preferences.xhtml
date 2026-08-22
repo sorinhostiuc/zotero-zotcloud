@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>ZotCloud Settings</title>
+  <style>
+    /* Zotero 9 (newer Gecko) renders chrome dialog windows with a transparent /
+       vibrancy background on macOS by default. Without an explicit opaque
+       background the desktop shows through. Force an opaque light surface. */
+    :root { color-scheme: light; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background-color: #ffffff;
+      color: #1a1a1a;
+    }
+    .zotcloud-settings {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      padding: 16px 20px;
+      height: 100%;
+      box-sizing: border-box;
+      overflow-y: auto;
+      background-color: #ffffff;
+    }
+    .zotcloud-section {
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #e8e8e0;
+      position: relative;
+    }
+    .zotcloud-section:last-child { border-bottom: none; }
+    .zotcloud-section h2 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+    .zotcloud-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .zotcloud-grid select,
+    .zotcloud-grid input[type="text"],
+    .zotcloud-grid input[type="password"] {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    select {
+      background-color: #ffffff;
+      color: #1a1a1a;
+    }
+    select option {
+      background-color: #ffffff;
+      color: #1a1a1a;
+      padding: 4px 8px;
+    }
+    .zotcloud-provider-list select {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .zotcloud-field-label { font-size: 11px; color: #6b6b6b; margin-bottom: 4px; }
+    .zotcloud-checkbox-group { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+    .zotcloud-checkbox-group label { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+    .zotcloud-provider-list { display: flex; flex-direction: column; gap: 8px; }
+    .zotcloud-device-list { display: flex; flex-direction: column; gap: 6px; }
+    .zotcloud-danger { border-top: 1px solid #e0e0d8; padding-top: 12px; margin-top: 12px; }
+    .zotcloud-danger h2 { color: #a32d2d; }
+    .zotcloud-danger-actions { display: flex; gap: 8px; }
+  </style>
+</head>
+<body>
+  <div class="zotcloud-settings">
+    <div id="zotcloud-settings-root">
+      <p style="color:#999;font-size:12px;">Loading settings...</p>
+    </div>
+  </div>
+  <script type="text/javascript"><![CDATA[
+    window.addEventListener("load", function() {
+      try {
+        // Zotero global may come from: window.arguments, opener, or Components
+        var Z = window.arguments && window.arguments[0] && window.arguments[0].Zotero;
+        if (!Z) Z = window.opener && window.opener.Zotero;
+        if (!Z) {
+          try { Z = Components.classes["@zotero.org/Zotero;1"]
+            .getService(Components.interfaces.nsISupports).wrappedJSObject; } catch(e2) {}
+        }
+        if (Z && Z.ZotCloud && Z.ZotCloud.initPreferences) {
+          Z.ZotCloud.initPreferences(document);
+        } else {
+          document.getElementById("zotcloud-settings-root").textContent =
+            "ZotCloud not initialized. Please restart Zotero.";
+        }
+      } catch(e) {
+        document.getElementById("zotcloud-settings-root").textContent =
+          "Error loading settings: " + e.message;
+      }
+    });
+  ]]></script>
+</body>
+</html>

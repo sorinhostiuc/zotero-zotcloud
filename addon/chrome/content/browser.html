@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZotCloud Browser</title>
+<style>
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f0;
+  --bg-tertiary: #eeeee8;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b6b6b;
+  --text-tertiary: #999999;
+  --border: #e0e0d8;
+  --border-hover: #c0c0b8;
+  --blue-50: #E6F1FB;
+  --blue-400: #378ADD;
+  --blue-600: #185FA5;
+  --green-400: #1D9E75;
+  --green-600: #0F6E56;
+  --green-bg: #E1F5EE;
+  --amber-400: #BA7517;
+  --amber-bg: #FAEEDA;
+  --red-600: #A32D2D;
+  --red-bg: #FCEBEB;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1e1e1e; --bg-secondary: #2a2a2a; --bg-tertiary: #333333;
+    --text-primary: #e8e8e8; --text-secondary: #999999; --text-tertiary: #666666;
+    --border: #3a3a3a; --border-hover: #4a4a4a;
+    --blue-50: #0C447C; --blue-400: #85B7EB; --blue-600: #B5D4F4;
+    --green-400: #5DCAA5; --green-600: #9FE1CB; --green-bg: #085041;
+    --amber-400: #EF9F27; --amber-bg: #412402;
+    --red-600: #F09595; --red-bg: #501313;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); font-size: 13px; color: var(--text-primary); background: var(--bg-secondary); }
+a { color: var(--blue-600); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.header { background: var(--bg-primary); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 16px; font-weight: 600; }
+.header .status { font-size: 12px; color: var(--text-tertiary); margin-left: auto; }
+.header .status.connected { color: var(--green-400); }
+.connect-bar { background: var(--bg-primary); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.connect-bar label { font-size: 11px; color: var(--text-secondary); }
+.connect-bar input { font-size: 12px; padding: 5px 10px; height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font); }
+.connect-bar input[type="text"] { width: 280px; }
+.connect-bar input[type="password"], .connect-bar input.user { width: 140px; }
+.connect-bar input.folder { width: 120px; }
+.btn { font-size: 11px; padding: 5px 14px; height: 30px; border: 1px solid var(--border-hover); border-radius: 4px; background: transparent; color: var(--text-primary); cursor: pointer; font-family: var(--font); }
+.btn:hover { background: var(--bg-secondary); }
+.btn-primary { background: var(--blue-50); color: var(--blue-600); border-color: var(--blue-400); }
+.btn-primary:hover { background: var(--blue-400); color: #fff; }
+.tabs { background: var(--bg-primary); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; gap: 0; }
+.tab { padding: 10px 18px; font-size: 12px; font-weight: 500; color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; }
+.tab:hover { color: var(--text-primary); background: var(--bg-secondary); }
+.tab.active { color: var(--blue-600); border-bottom-color: var(--blue-400); }
+.content { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.card { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.card-label { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
+.card-value { font-size: 22px; font-weight: 600; }
+.card-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+.device-list { display: flex; flex-direction: column; gap: 8px; }
+.device-card { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; }
+.device-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); flex-shrink: 0; }
+.device-dot.online { background: var(--green-400); }
+.table-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.table-toolbar input[type="search"] { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 12px; height: 32px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font); }
+/* Custom dropdown (replaces native <select> which is transparent in Zotero chrome context) */
+.dropdown { position: relative; display: inline-block; min-width: 140px; }
+.dropdown-toggle { font-size: 12px; padding: 5px 28px 5px 10px; height: 32px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; font-family: var(--font); box-sizing: border-box; width: 100%; }
+.dropdown-toggle::after { content: '\25BC'; font-size: 8px; color: var(--text-tertiary); position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.dropdown-toggle:hover { border-color: var(--border-hover); }
+.dropdown-menu { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 240px; overflow-y: auto; margin-top: 2px; }
+.dropdown.open .dropdown-menu { display: block; }
+.dropdown-item { padding: 6px 10px; font-size: 12px; cursor: pointer; color: var(--text-primary); background: var(--bg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dropdown-item:hover { background: var(--blue-50); color: var(--blue-600); }
+.dropdown-item.selected { background: var(--blue-50); color: var(--blue-600); font-weight: 500; }
+.count-label { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; table-layout: fixed; min-width: 700px; }
+thead { background: var(--bg-secondary); }
+th { text-align: left; padding: 8px 12px; font-weight: 500; font-size: 11px; color: var(--text-secondary); border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+th:hover { background: var(--bg-tertiary); }
+td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
+tr:hover { background: var(--bg-secondary); }
+.cell-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-secondary { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-type { font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--bg-secondary); color: var(--text-secondary); display: inline-block; }
+.cell-size { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.cell-hash { font-family: monospace; font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-path { font-family: monospace; font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 3px 8px; border-radius: 4px; background: var(--blue-50); color: var(--blue-600); border: 1px solid var(--blue-400); white-space: nowrap; cursor: pointer; font-family: var(--font); }
+.pdf-link:hover { background: var(--blue-400); color: #fff; text-decoration: none; }
+/* Library table column widths */
+.lib-table .col-title { width: 35%; }
+.lib-table .col-authors { width: 20%; }
+.lib-table .col-year { width: 6%; }
+.lib-table .col-type { width: 12%; }
+.lib-table .col-journal { width: 15%; }
+.lib-table .col-pdf { width: 12%; }
+/* Attachments table column widths */
+.att-table .col-filename { width: 20%; }
+.att-table .col-path { width: 25%; }
+.att-table .col-size { width: 8%; }
+.att-table .col-itemkey { width: 10%; }
+.att-table .col-hash { width: 12%; }
+.att-table .col-uploaded { width: 10%; }
+.att-table .col-download { width: 15%; }
+.timeline { display: flex; flex-direction: column; gap: 6px; }
+.tl-item { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; display: flex; align-items: flex-start; gap: 10px; }
+.tl-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; margin-top: 2px; }
+.tl-icon.add { background: var(--green-bg); color: var(--green-400); }
+.tl-icon.modify { background: var(--blue-50); color: var(--blue-600); }
+.tl-icon.delete { background: var(--red-bg); color: var(--red-600); }
+.tl-body { flex: 1; min-width: 0; }
+.tl-title { font-size: 12px; font-weight: 500; }
+.tl-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+.json-viewer { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; font-family: "SF Mono", "Fira Code", monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 600px; overflow: auto; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 12px; }
+.pagination button { font-size: 11px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; }
+.pagination button:hover { background: var(--bg-secondary); }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.pagination button.current { background: var(--blue-50); color: var(--blue-600); border-color: var(--blue-400); }
+.pg-info { font-size: 11px; color: var(--text-tertiary); }
+.empty-msg { text-align: center; padding: 40px; color: var(--text-tertiary); font-size: 13px; }
+.section-title { font-size: 13px; font-weight: 500; margin-bottom: 10px; }
+.section-title-gap { font-size: 13px; font-weight: 500; margin: 16px 0 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ZotCloud Browser</h1>
+  <span class="status" id="conn-status">Not connected</span>
+</div>
+
+<div class="connect-bar" id="connect-bar-provider" style="display:none">
+  <label>Provider</label>
+  <select id="provider-select" style="font-size:12px;height:30px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary)"></select>
+  <button class="btn btn-primary" id="btn-connect-provider">Connect</button>
+  <button class="btn" id="btn-refresh-provider" style="display:none">Refresh</button>
+</div>
+<div class="connect-bar" id="connect-bar-webdav">
+  <label>URL</label>
+  <input type="text" id="webdav-url" placeholder="https://nas:5006/webdav">
+  <label>User</label>
+  <input type="text" id="webdav-user" class="user" placeholder="username">
+  <label>Pass</label>
+  <input type="password" id="webdav-pass" placeholder="password">
+  <label>Folder</label>
+  <input type="text" id="webdav-folder" class="folder" value="/ZotCloud" placeholder="/ZotCloud">
+  <button class="btn btn-primary" id="btn-connect">Connect</button>
+  <button class="btn" id="btn-refresh" style="display:none">Refresh</button>
+</div>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="library">Library</div>
+  <div class="tab" data-tab="attachments">Attachments</div>
+  <div class="tab" data-tab="changelog">Changelog</div>
+  <div class="tab" data-tab="raw">Raw Data</div>
+</div>
+
+<div class="content">
+  <div class="panel active" id="panel-overview">
+    <div class="empty-msg">Connect to a cloud provider to view sync data.</div>
+  </div>
+  <div class="panel" id="panel-library"></div>
+  <div class="panel" id="panel-attachments"></div>
+  <div class="panel" id="panel-changelog"></div>
+  <div class="panel" id="panel-raw"></div>
+</div>
+
+<script>
+// All data rendered via DOM API (no innerHTML). Uses textContent for user data.
+
+// Get Zotero global — in chrome:// windows it may come from different sources
+const Zotero = window.Zotero || window.opener?.Zotero ||
+  (typeof Components !== 'undefined' && Components.classes
+    ? Components.classes["@mozilla.org/appshell/window-mediator;1"]
+        ?.getService(Components.interfaces.nsIWindowMediator)
+        ?.getMostRecentWindow("navigator:browser")?.Zotero
+    : null);
+
+let baseUrl = '', authHeader = '', cloudFolder = '/ZotCloud';
+let manifest = null, attachManifest = null, snapshot = [], changelogs = [];
+let lastManifestError = null;
+
+// --- Provider mode (for OAuth providers: Google Drive, Dropbox, pCloud) ---
+let activeProviderKey = null;  // null = WebDAV direct mode
+let activeProvider = null;     // CloudProvider instance from sync engine
+
+/** Download text content from cloud — works in both WebDAV and provider modes */
+async function cloudDownloadText(path) {
+  if (activeProvider) {
+    const data = await activeProvider.download(path);
+    return new TextDecoder().decode(data);
+  }
+  return (await webdavFetch(path)).text();
+}
+
+/** Download JSON from cloud */
+async function cloudDownloadJSON(path) {
+  if (activeProvider) {
+    const data = await activeProvider.download(path);
+    return JSON.parse(new TextDecoder().decode(data));
+  }
+  return (await webdavFetch(path)).json();
+}
+
+/** Download blob from cloud */
+async function cloudDownloadBlob(path) {
+  if (activeProvider) {
+    const data = await activeProvider.download(path);
+    const contentType = path.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream';
+    return new Blob([data], { type: contentType });
+  }
+  const res = await webdavFetch(path, { responseType: 'blob' });
+  return res.blob();
+}
+
+/** List directory contents from cloud */
+async function cloudListDir(path) {
+  if (activeProvider) {
+    const files = await activeProvider.list(path);
+    return files.map(f => ({
+      name: f.name,
+      href: f.path,
+      isDir: f.isDirectory,
+    }));
+  }
+  return listDir(path);
+}
+
+// --- DOM helpers ---
+function h(tag, attrs, children) {
+  const el = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+      else if (k === 'className') el.className = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
+      else el.setAttribute(k, v);
+    }
+  }
+  if (children != null) {
+    if (Array.isArray(children)) children.forEach(c => { if (c != null) el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    else if (typeof children === 'string') el.textContent = children;
+    else el.appendChild(children);
+  }
+  return el;
+}
+
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+// Custom dropdown (replaces native <select> which renders transparent in Zotero chrome:// context)
+function createDropdown(options, selectedValue, onChange) {
+  // options: [{value, label}], selectedValue: string, onChange: (value) => void
+  const wrapper = h('div', { className: 'dropdown' });
+  const toggle = h('div', { className: 'dropdown-toggle' });
+  const menu = h('div', { className: 'dropdown-menu' });
+
+  function setLabel() {
+    const sel = options.find(o => o.value === selectedValue) || options[0];
+    toggle.textContent = sel ? sel.label : '';
+  }
+  setLabel();
+
+  for (const opt of options) {
+    const item = h('div', { className: 'dropdown-item' + (opt.value === selectedValue ? ' selected' : '') });
+    item.textContent = opt.label;
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectedValue = opt.value;
+      setLabel();
+      wrapper.classList.remove('open');
+      // Update selected styling
+      menu.querySelectorAll('.dropdown-item').forEach(di => di.classList.remove('selected'));
+      item.classList.add('selected');
+      onChange(opt.value);
+    });
+    menu.appendChild(item);
+  }
+
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Close all other dropdowns first
+    document.querySelectorAll('.dropdown.open').forEach(d => { if (d !== wrapper) d.classList.remove('open'); });
+    wrapper.classList.toggle('open');
+  });
+
+  wrapper.appendChild(toggle);
+  wrapper.appendChild(menu);
+  return wrapper;
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', () => {
+  document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+});
+
+function svgDownloadIcon() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '12'); svg.setAttribute('height', '12'); svg.setAttribute('viewBox', '0 0 12 12');
+  const p1 = document.createElementNS(ns, 'path');
+  p1.setAttribute('d', 'M6 1v7M3 6l3 3 3-3');
+  p1.setAttribute('stroke', 'currentColor'); p1.setAttribute('stroke-width', '1.2');
+  p1.setAttribute('fill', 'none'); p1.setAttribute('stroke-linecap', 'round'); p1.setAttribute('stroke-linejoin', 'round');
+  const p2 = document.createElementNS(ns, 'path');
+  p2.setAttribute('d', 'M1 9v2h10V9');
+  p2.setAttribute('stroke', 'currentColor'); p2.setAttribute('stroke-width', '1.2');
+  p2.setAttribute('fill', 'none'); p2.setAttribute('stroke-linecap', 'round'); p2.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(p1); svg.appendChild(p2);
+  return svg;
+}
+
+// --- WebDAV ---
+// Use XMLHttpRequest instead of fetch() because fetch() cannot handle
+// self-signed SSL certificates in Zotero's chrome:// context.
+// XMLHttpRequest with mozBackgroundRequest=false shows the cert dialog.
+async function webdavFetch(path, opts = {}) {
+  // URL-encode each path segment (preserve / separators)
+  const safePath = path.split('/').map(seg => seg ? encodeURIComponent(seg) : '').join('/');
+  const url = baseUrl + (safePath.startsWith('/') ? safePath : '/' + safePath);
+  const method = opts.method || 'GET';
+  const wantBlob = opts.responseType === 'blob';
+  const allHeaders = { 'Authorization': authHeader, ...(opts.headers || {}) };
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    if (wantBlob) xhr.responseType = 'blob';
+    try { xhr.mozBackgroundRequest = false; } catch(e) {}
+    for (const [k, v] of Object.entries(allHeaders)) xhr.setRequestHeader(k, v);
+
+    xhr.onload = () => {
+      if (xhr.status >= 400 && xhr.status !== 207) {
+        reject(new Error(xhr.status + ' ' + xhr.statusText + ': ' + path));
+        return;
+      }
+      // Return a fetch-Response-like object
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        text: () => wantBlob ? Promise.reject(new Error('Cannot read text from blob response')) : Promise.resolve(xhr.responseText),
+        json: () => wantBlob ? Promise.reject(new Error('Cannot read JSON from blob response')) : Promise.resolve(JSON.parse(xhr.responseText)),
+        blob: () => wantBlob ? Promise.resolve(xhr.response) : Promise.resolve(new Blob([xhr.responseText], { type: xhr.getResponseHeader('content-type') || 'application/octet-stream' })),
+        arrayBuffer: () => wantBlob ? xhr.response.arrayBuffer() : Promise.resolve(new TextEncoder().encode(xhr.responseText).buffer),
+        headers: { get: (h) => xhr.getResponseHeader(h) },
+      });
+    };
+    xhr.onerror = () => reject(new Error('Network error: ' + method + ' ' + path));
+    xhr.ontimeout = () => reject(new Error('Timeout: ' + method + ' ' + path));
+    xhr.timeout = 60000;
+    xhr.send(opts.body || null);
+  });
+}
+async function downloadJSON(path) { return (await webdavFetch(path)).json(); }
+async function listDir(path) {
+  const body = '<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><allprop/></propfind>';
+  const res = await webdavFetch(path, { method: 'PROPFIND', headers: { 'Content-Type': 'application/xml; charset=utf-8', 'Depth': '1' }, body });
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  const responses = doc.getElementsByTagNameNS('DAV:', 'response');
+  const normalizedBase = (baseUrl + path).replace(/\/+$/, '');
+  const normalizedBasePath = new URL(normalizedBase).pathname.replace(/\/+$/, '');
+  const items = [];
+  for (let i = 0; i < responses.length; i++) {
+    const r = responses[i];
+    let href = decodeURIComponent(r.getElementsByTagNameNS('DAV:', 'href')[0]?.textContent || '').replace(/\/+$/, '');
+    if (href === normalizedBase || href === normalizedBasePath || decodeURIComponent(href) === normalizedBasePath) continue;
+    const isDir = r.getElementsByTagNameNS('DAV:', 'collection').length > 0;
+    const name = href.split('/').filter(Boolean).pop() || '';
+    items.push({ name, href, isDir });
+  }
+  return items;
+}
+
+// --- Connect ---
+document.getElementById('btn-connect').addEventListener('click', connect);
+document.getElementById('btn-refresh').addEventListener('click', loadData);
+
+async function connect() {
+  baseUrl = document.getElementById('webdav-url').value.trim().replace(/\/+$/, '');
+  if (!baseUrl.match(/^https?:\/\//)) baseUrl = 'https://' + baseUrl;
+  cloudFolder = document.getElementById('webdav-folder').value.trim() || '/ZotCloud';
+  authHeader = 'Basic ' + btoa(document.getElementById('webdav-user').value + ':' + document.getElementById('webdav-pass').value);
+  const status = document.getElementById('conn-status');
+  status.textContent = 'Connecting...'; status.className = 'status';
+  try {
+    await loadData();
+    status.textContent = 'Connected'; status.className = 'status connected';
+    document.getElementById('btn-refresh').style.display = '';
+    saveCredentials();
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message; status.className = 'status';
+    // Clear stored credentials on auth failure to avoid auto-connecting with wrong creds
+    try { localStorage.removeItem('zotcloud_pass'); } catch(e) {}
+  }
+}
+
+async function loadData() {
+  lastManifestError = null;
+  try { manifest = await cloudDownloadJSON(cloudFolder + '/manifest.json'); } catch (err) { manifest = null; lastManifestError = err; }
+  try { attachManifest = await cloudDownloadJSON(cloudFolder + '/attachments/_manifest.json'); } catch { attachManifest = null; }
+  snapshot = [];
+  try {
+    const snapFiles = (await cloudListDir(cloudFolder + '/snapshots'))
+      .filter(f => f.name.endsWith('.json') && !f.name.endsWith('.meta.json') && !f.isDir)
+      .sort((a, b) => b.name.localeCompare(a.name));
+    if (snapFiles.length > 0) snapshot = await cloudDownloadJSON(cloudFolder + '/snapshots/' + snapFiles[0].name);
+  } catch {}
+  changelogs = [];
+  try {
+    const deviceDirs = await cloudListDir(cloudFolder + '/changelog');
+    for (const dir of deviceDirs) {
+      if (!dir.isDir) continue;
+      try {
+        const files = (await cloudListDir(cloudFolder + '/changelog/' + dir.name))
+          .filter(f => f.name.endsWith('.json') && !f.isDir).sort((a, b) => b.name.localeCompare(a.name));
+        for (const file of files.slice(0, 5)) {
+          try { changelogs.push(...await cloudDownloadJSON(cloudFolder + '/changelog/' + dir.name + '/' + file.name)); } catch {}
+        }
+      } catch {}
+    }
+    changelogs.sort((a, b) => b.timestamp - a.timestamp);
+  } catch {}
+  renderOverview(); renderLibrary(); renderAttachments(); renderChangelog(); renderRaw();
+}
+
+// --- Tabs ---
+document.getElementById('tabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+});
+
+// --- Render: Overview ---
+function renderOverview() {
+  const panel = document.getElementById('panel-overview');
+  clear(panel);
+  if (!manifest) {
+    const errMsg = lastManifestError ? 'Error loading manifest: ' + (lastManifestError.message || String(lastManifestError)) : 'No manifest found on server. Have you synced at least once?';
+    panel.appendChild(h('div', { className: 'empty-msg' }, errMsg));
+    return;
+  }
+
+  const items = snapshot.filter(e => e.entityType === 'item');
+  const collections = snapshot.filter(e => e.entityType === 'collection');
+  const regularItems = items.filter(e => { const t = e.data?.fields?.itemType; return t && t !== 'attachment' && t !== 'note'; });
+  const attachFiles = attachManifest ? Object.keys(attachManifest.files).length : 0;
+  const totalSize = attachManifest ? Object.values(attachManifest.files).reduce((s, f) => s + (f.size || 0), 0) : 0;
+  const devices = Object.entries(manifest.devices || {});
+
+  const cardsDiv = h('div', { className: 'cards' }, [
+    makeCard('References', regularItems.length, 'From latest snapshot'),
+    makeCard('Attachment Files', attachFiles, formatSize(totalSize) + ' on cloud'),
+    makeCard('Collections', collections.length, ''),
+    makeCard('Devices', devices.length, ''),
+    makeCard('Last Modified', timeAgo(manifest.lastModified), manifest.lastModified ? new Date(manifest.lastModified).toLocaleString() : ''),
+  ]);
+  panel.appendChild(cardsDiv);
+
+  panel.appendChild(h('h3', { className: 'section-title' }, 'Connected Devices'));
+  const devList = h('div', { className: 'device-list' });
+  for (const [id, info] of devices) {
+    const isRecent = info.lastSeen && (Date.now() - new Date(info.lastSeen).getTime()) < 600000;
+    devList.appendChild(h('div', { className: 'device-card' }, [
+      h('span', { className: 'device-dot' + (isRecent ? ' online' : '') }),
+      h('span', { style: { fontWeight: '500', fontSize: '12px' } }, info.name || id),
+      h('span', { style: { fontSize: '11px', color: 'var(--text-tertiary)' } }, 'Zotero ' + (info.zoteroVersion || '?')),
+      h('span', { style: { fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' } }, info.lastSeen ? timeAgo(info.lastSeen) : '?'),
+    ]));
+  }
+  panel.appendChild(devList);
+}
+
+function makeCard(label, value, sub) {
+  return h('div', { className: 'card' }, [
+    h('div', { className: 'card-label' }, label),
+    h('div', { className: 'card-value' }, String(value)),
+    sub ? h('div', { className: 'card-sub' }, sub) : null,
+  ]);
+}
+
+// --- Library data ---
+function getLibraryItems() {
+  // Build map: parentItemKey → [{hash, ...info}]
+  const parentToFiles = {};
+  let linkedCount = 0;
+
+  if (attachManifest) {
+    // Method 1: Use parentItemKey from attachment manifest (new field, after re-sync)
+    for (const [hash, info] of Object.entries(attachManifest.files)) {
+      if (info.parentItemKey) {
+        if (!parentToFiles[info.parentItemKey]) parentToFiles[info.parentItemKey] = [];
+        parentToFiles[info.parentItemKey].push({ hash, ...info });
+        linkedCount++;
+      }
+    }
+
+    // Method 2: Use snapshot attachment items with parentKey (after re-sync with updated code)
+    if (linkedCount === 0) {
+      const attachmentEvents = snapshot.filter(e => e.entityType === 'item' && e.data?.fields?.itemType === 'attachment');
+      const attachKeyToParent = {};
+      for (const ae of attachmentEvents) {
+        if (ae.data?.parentKey) {
+          attachKeyToParent[ae.entityKey] = ae.data.parentKey;
+        }
+      }
+      for (const [hash, info] of Object.entries(attachManifest.files)) {
+        const parentKey = attachKeyToParent[info.itemKey];
+        if (parentKey) {
+          if (!parentToFiles[parentKey]) parentToFiles[parentKey] = [];
+          parentToFiles[parentKey].push({ hash, ...info });
+          linkedCount++;
+        }
+      }
+    }
+
+    // Method 3: Match by itemKey directly — in some Zotero versions, the attachment
+    // item key equals the parent item key prefix, or the manifest itemKey IS the parent key.
+    // Also try: if manifest has only ONE attachment and snapshot has matching entityKey for a
+    // regular item, associate them. This is a heuristic fallback.
+    if (linkedCount === 0) {
+      // Build set of regular item keys for fast lookup
+      const regularKeys = new Set();
+      for (const e of snapshot) {
+        if (e.entityType === 'item') {
+          const t = e.data?.fields?.itemType;
+          if (t && t !== 'attachment' && t !== 'note') regularKeys.add(e.entityKey);
+        }
+      }
+      // If itemKey in manifest matches a regular item key, link directly
+      for (const [hash, info] of Object.entries(attachManifest.files)) {
+        if (info.itemKey && regularKeys.has(info.itemKey)) {
+          if (!parentToFiles[info.itemKey]) parentToFiles[info.itemKey] = [];
+          parentToFiles[info.itemKey].push({ hash, ...info });
+          linkedCount++;
+        }
+      }
+    }
+
+    // Method 4: Match by cloudPath filename — extract author/year/title from cloudPath
+    // and fuzzy-match against snapshot items
+    if (linkedCount === 0) {
+      const allRegular = snapshot.filter(e => {
+        const t = e.data?.fields?.itemType;
+        return e.entityType === 'item' && t && t !== 'attachment' && t !== 'note';
+      });
+      for (const [hash, info] of Object.entries(attachManifest.files)) {
+        const cp = info.cloudPath || info.originalName || '';
+        if (!cp) continue;
+        const cpLower = cp.toLowerCase().replace(/[_\-\.]/g, ' ');
+        // Try to match against item titles
+        let bestMatch = null, bestScore = 0;
+        for (const item of allRegular) {
+          const title = (item.data?.fields?.title || '').toLowerCase();
+          if (!title || title.length < 5) continue;
+          // Check if first 20 chars of title appear in cloudPath
+          const titleStart = title.slice(0, Math.min(20, title.length));
+          if (cpLower.includes(titleStart)) {
+            const score = titleStart.length;
+            if (score > bestScore) { bestScore = score; bestMatch = item.entityKey; }
+          }
+        }
+        if (bestMatch) {
+          if (!parentToFiles[bestMatch]) parentToFiles[bestMatch] = [];
+          parentToFiles[bestMatch].push({ hash, ...info });
+          linkedCount++;
+        }
+      }
+    }
+  }
+
+  const allEvents = snapshot.filter(e => e.entityType === 'item');
+  const regularItems = allEvents.filter(e => { const t = e.data?.fields?.itemType; return t && t !== 'attachment' && t !== 'note'; });
+  const totalAttachments = attachManifest ? Object.keys(attachManifest.files).length : 0;
+
+  const items = regularItems.map(event => {
+    const d = event.data;
+    const creators = (d.creators || []).map(c => c.lastName || c.firstName || '').filter(Boolean);
+    let year = ''; const ym = (d.fields?.date || '').match(/\d{4}/); if (ym) year = ym[0];
+    return {
+      key: event.entityKey, title: d.fields?.title || 'Untitled',
+      authors: creators.join(', ') || 'Unknown', year,
+      type: d.fields?.itemType || '', journal: d.fields?.publicationTitle || d.fields?.journalAbbreviation || '',
+      doi: d.fields?.DOI || '', url: d.fields?.url || '',
+      tags: (d.tags || []).map(t => t.tag || t).join(', '),
+      pdfs: parentToFiles[event.entityKey] || [],
+    };
+  });
+
+  return { items, linkedCount, totalAttachments };
+}
+
+// --- Render: Library ---
+let libSort = { col: 'title', asc: true }, libSearch = '', libTypeFilter = '', libPage = 0;
+const LIB_PS = 50;
+
+function renderLibrary() {
+  const panel = document.getElementById('panel-library');
+  clear(panel);
+  if (snapshot.length === 0) { panel.appendChild(h('div', { className: 'empty-msg' }, 'No snapshot found. Run a sync first.')); return; }
+
+  const { items: allItems, linkedCount, totalAttachments } = getLibraryItems();
+
+  // Show banner if PDFs exist but couldn't be linked
+  if (totalAttachments > 0 && linkedCount === 0) {
+    const banner = h('div', {
+      style: { padding: '10px 14px', marginBottom: '12px', borderRadius: '6px', border: '1px solid var(--amber-400)', background: 'var(--amber-bg)', fontSize: '12px', color: 'var(--text-primary)' }
+    }, totalAttachments + ' PDF(s) on cloud but not linked to references. Run "Sync Now" in Zotero (with updated plugin) to fix this. PDFs are available in the Attachments tab.');
+    panel.appendChild(banner);
+  } else if (linkedCount > 0) {
+    // silently linked
+  }
+
+  const types = [...new Set(allItems.map(i => i.type))].sort();
+
+  let filtered = allItems;
+  if (libSearch) { const q = libSearch.toLowerCase(); filtered = filtered.filter(i => i.title.toLowerCase().includes(q) || i.authors.toLowerCase().includes(q) || i.journal.toLowerCase().includes(q) || i.year.includes(q) || i.tags.toLowerCase().includes(q)); }
+  if (libTypeFilter) filtered = filtered.filter(i => i.type === libTypeFilter);
+
+  filtered.sort((a, b) => {
+    let va = (a[libSort.col] || '').toString().toLowerCase(), vb = (b[libSort.col] || '').toString().toLowerCase();
+    return va < vb ? (libSort.asc ? -1 : 1) : va > vb ? (libSort.asc ? 1 : -1) : 0;
+  });
+
+  const totalPages = Math.ceil(filtered.length / LIB_PS);
+  if (libPage >= totalPages) libPage = Math.max(0, totalPages - 1);
+  const pageItems = filtered.slice(libPage * LIB_PS, (libPage + 1) * LIB_PS);
+
+  // Toolbar
+  const searchInput = h('input', { type: 'search', placeholder: 'Search references...', value: libSearch });
+  searchInput.addEventListener('input', () => { libSearch = searchInput.value; libPage = 0; renderLibrary(); });
+  const typeOptions = [{value: '', label: 'All types'}, ...types.map(t => ({value: t, label: t}))];
+  const typeDropdown = createDropdown(typeOptions, libTypeFilter, (val) => { libTypeFilter = val; libPage = 0; renderLibrary(); });
+  panel.appendChild(h('div', { className: 'table-toolbar' }, [searchInput, typeDropdown, h('span', { className: 'count-label' }, filtered.length + ' of ' + allItems.length + ' references')]));
+
+  // Table
+  const tableWrap = h('div', { className: 'table-wrap' });
+  const table = h('table', { className: 'lib-table' });
+  // Column width definitions
+  const colgroup = h('colgroup', null, [
+    h('col', { className: 'col-title' }),
+    h('col', { className: 'col-authors' }),
+    h('col', { className: 'col-year' }),
+    h('col', { className: 'col-type' }),
+    h('col', { className: 'col-journal' }),
+    h('col', { className: 'col-pdf' }),
+  ]);
+  table.appendChild(colgroup);
+  const thead = h('thead');
+  const headRow = h('tr');
+  const cols = [['title','Title'],['authors','Authors'],['year','Year'],['type','Type'],['journal','Journal'],['pdf','PDF']];
+  for (const [key, label] of cols) {
+    const arrow = libSort.col === key ? (libSort.asc ? ' \u25B2' : ' \u25BC') : '';
+    const th = h('th', { 'data-sort': key }, label + arrow);
+    if (key !== 'pdf') th.addEventListener('click', () => {
+      if (libSort.col === key) libSort.asc = !libSort.asc; else { libSort.col = key; libSort.asc = true; }
+      renderLibrary();
+    });
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow); table.appendChild(thead);
+
+  const tbody = h('tbody');
+  for (const item of pageItems) {
+    const tr = h('tr');
+    // Title cell with optional DOI link
+    const titleTd = h('td', { className: 'cell-title' });
+    if (item.doi) {
+      const a = h('a', { href: 'https://doi.org/' + item.doi, target: '_blank', title: 'DOI: ' + item.doi }, item.title);
+      titleTd.appendChild(a);
+    } else if (item.url) {
+      titleTd.appendChild(h('a', { href: item.url, target: '_blank' }, item.title));
+    } else {
+      titleTd.textContent = item.title;
+    }
+    tr.appendChild(titleTd);
+    tr.appendChild(h('td', { className: 'cell-secondary' }, item.authors));
+    tr.appendChild(h('td', null, item.year));
+    const typeTd = h('td'); typeTd.appendChild(h('span', { className: 'cell-type' }, item.type)); tr.appendChild(typeTd);
+    tr.appendChild(h('td', { className: 'cell-secondary' }, item.journal));
+
+    // PDF cell — uses authenticated fetch + blob download
+    const pdfTd = h('td');
+    if (item.pdfs.length > 0) {
+      for (const pdf of item.pdfs) {
+        const remotePath = pdf.cloudPath
+          ? cloudFolder + '/' + pdf.cloudPath
+          : cloudFolder + '/attachments/' + pdf.hash + (pdf.extension || '.pdf');
+        const filename = pdf.originalName || pdf.cloudPath?.split('/').pop() || (pdf.hash.slice(0, 8) + (pdf.extension || '.pdf'));
+        const btn = h('button', { className: 'pdf-link', title: filename });
+        btn.appendChild(svgDownloadIcon());
+        btn.appendChild(document.createTextNode(' ' + formatSize(pdf.size)));
+        btn.addEventListener('click', () => authenticatedDownload(remotePath, filename, btn));
+        pdfTd.appendChild(btn);
+        pdfTd.appendChild(document.createTextNode(' '));
+      }
+    } else {
+      pdfTd.appendChild(h('span', { style: { color: 'var(--text-tertiary)' } }, '\u2014'));
+    }
+    tr.appendChild(pdfTd);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+  panel.appendChild(tableWrap);
+  panel.appendChild(buildPagination(filtered.length, LIB_PS, libPage, p => { libPage = p; renderLibrary(); }));
+}
+
+// --- Render: Attachments ---
+let attSearch = '', attPage = 0;
+const ATT_PS = 50;
+
+function renderAttachments() {
+  const panel = document.getElementById('panel-attachments');
+  clear(panel);
+  if (!attachManifest || Object.keys(attachManifest.files).length === 0) {
+    panel.appendChild(h('div', { className: 'empty-msg' }, 'No attachment manifest found.')); return;
+  }
+  let entries = Object.entries(attachManifest.files).map(([hash, info]) => ({ hash, ...info }));
+  if (attSearch) { const q = attSearch.toLowerCase(); entries = entries.filter(e => (e.originalName||'').toLowerCase().includes(q) || (e.cloudPath||'').toLowerCase().includes(q) || (e.itemKey||'').toLowerCase().includes(q) || e.hash.toLowerCase().includes(q)); }
+  entries.sort((a, b) => (b.uploadedAt || '').localeCompare(a.uploadedAt || ''));
+  const totalPages = Math.ceil(entries.length / ATT_PS);
+  if (attPage >= totalPages) attPage = Math.max(0, totalPages - 1);
+  const pageEntries = entries.slice(attPage * ATT_PS, (attPage + 1) * ATT_PS);
+  const totalSize = entries.reduce((s, e) => s + (e.size || 0), 0);
+
+  const searchInput = h('input', { type: 'search', placeholder: 'Search files...', value: attSearch });
+  searchInput.addEventListener('input', () => { attSearch = searchInput.value; attPage = 0; renderAttachments(); });
+  panel.appendChild(h('div', { className: 'table-toolbar' }, [searchInput, h('span', { className: 'count-label' }, entries.length + ' files \u00B7 ' + formatSize(totalSize))]));
+
+  const tableWrap = h('div', { className: 'table-wrap' });
+  const table = h('table', { className: 'att-table' });
+  table.appendChild(h('colgroup', null, [
+    h('col', { className: 'col-filename' }),
+    h('col', { className: 'col-path' }),
+    h('col', { className: 'col-size' }),
+    h('col', { className: 'col-itemkey' }),
+    h('col', { className: 'col-hash' }),
+    h('col', { className: 'col-uploaded' }),
+    h('col', { className: 'col-download' }),
+  ]));
+  const thead = h('thead');
+  thead.appendChild(h('tr', null, ['Filename','Cloud Path','Size','Item Key','Hash','Uploaded','Download'].map(l => h('th', null, l))));
+  table.appendChild(thead);
+  const tbody = h('tbody');
+  for (const e of pageEntries) {
+    const remotePath = e.cloudPath ? cloudFolder + '/' + e.cloudPath : cloudFolder + '/attachments/' + e.hash + (e.extension || '');
+    const filename = e.originalName || e.cloudPath?.split('/').pop() || (e.hash.slice(0, 8) + (e.extension || ''));
+    const dlBtn = h('button', { className: 'pdf-link', title: 'Download ' + filename });
+    dlBtn.appendChild(svgDownloadIcon()); dlBtn.appendChild(document.createTextNode(' Download'));
+    dlBtn.addEventListener('click', () => authenticatedDownload(remotePath, filename, dlBtn));
+    tbody.appendChild(h('tr', null, [
+      h('td', null, e.originalName || '?'),
+      h('td', { className: 'cell-path', title: e.cloudPath || '' }, e.cloudPath || '(flat)'),
+      h('td', { className: 'cell-size' }, formatSize(e.size)),
+      h('td', { className: 'cell-hash' }, e.itemKey || '\u2014'),
+      h('td', { className: 'cell-hash', title: e.hash }, e.hash.slice(0, 12) + '...'),
+      h('td', { className: 'cell-size' }, e.uploadedAt ? timeAgo(e.uploadedAt) : '\u2014'),
+      h('td', null, dlBtn),
+    ]));
+  }
+  table.appendChild(tbody); tableWrap.appendChild(table); panel.appendChild(tableWrap);
+  panel.appendChild(buildPagination(entries.length, ATT_PS, attPage, p => { attPage = p; renderAttachments(); }));
+}
+
+// --- Render: Changelog ---
+let clPage = 0;
+const CL_PS = 100;
+
+function renderChangelog() {
+  const panel = document.getElementById('panel-changelog');
+  clear(panel);
+  if (changelogs.length === 0) { panel.appendChild(h('div', { className: 'empty-msg' }, 'No changelog entries found.')); return; }
+  const totalPages = Math.ceil(changelogs.length / CL_PS);
+  if (clPage >= totalPages) clPage = Math.max(0, totalPages - 1);
+  const pageEvents = changelogs.slice(clPage * CL_PS, (clPage + 1) * CL_PS);
+
+  panel.appendChild(h('div', { className: 'table-toolbar' }, [h('span', { className: 'count-label' }, changelogs.length + ' events total')]));
+  const timeline = h('div', { className: 'timeline' });
+  for (const event of pageEvents) {
+    const iconClass = event.type === 'add' ? 'add' : event.type === 'delete' ? 'delete' : 'modify';
+    const iconChar = event.type === 'add' ? '+' : event.type === 'delete' ? '\u00D7' : '\u270E';
+    const title = event.data?.fields?.title || event.data?.fields?.name || event.entityKey;
+    const deviceName = manifest?.devices?.[event.deviceId]?.name || (event.deviceId || '').slice(0, 8) || '?';
+    timeline.appendChild(h('div', { className: 'tl-item' }, [
+      h('span', { className: 'tl-icon ' + iconClass }, iconChar),
+      h('div', { className: 'tl-body' }, [
+        h('div', { className: 'tl-title' }, event.type + ' ' + event.entityType + ': ' + title),
+        h('div', { className: 'tl-meta' }, deviceName + ' \u00B7 ' + (event.timestamp ? new Date(event.timestamp).toLocaleString() : '?') + ' \u00B7 ' + event.entityKey),
+      ]),
+    ]));
+  }
+  panel.appendChild(timeline);
+  panel.appendChild(buildPagination(changelogs.length, CL_PS, clPage, p => { clPage = p; renderChangelog(); }));
+}
+
+// --- Render: Raw ---
+function renderRaw() {
+  const panel = document.getElementById('panel-raw');
+  clear(panel);
+  panel.appendChild(h('h3', { className: 'section-title' }, 'manifest.json'));
+  const pre1 = h('div', { className: 'json-viewer' }); pre1.textContent = JSON.stringify(manifest, null, 2) || 'Not found'; panel.appendChild(pre1);
+  panel.appendChild(h('h3', { className: 'section-title-gap' }, 'attachments/_manifest.json'));
+  const pre2 = h('div', { className: 'json-viewer' }); pre2.textContent = JSON.stringify(attachManifest, null, 2) || 'Not found'; panel.appendChild(pre2);
+  panel.appendChild(h('h3', { className: 'section-title-gap' }, 'Latest snapshot (first 20 entries)'));
+  const pre3 = h('div', { className: 'json-viewer' }); pre3.textContent = JSON.stringify(snapshot.slice(0, 20), null, 2) || 'Not found'; panel.appendChild(pre3);
+}
+
+// --- Pagination builder ---
+function buildPagination(total, pageSize, currentPage, onNavigate) {
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) return document.createDocumentFragment();
+  const div = h('div', { className: 'pagination' });
+  function pgBtn(label, page, disabled, isCurrent) {
+    const btn = h('button', null, label);
+    if (disabled) btn.disabled = true;
+    if (isCurrent) btn.className = 'current';
+    if (!disabled) btn.addEventListener('click', () => onNavigate(page));
+    return btn;
+  }
+  div.appendChild(pgBtn('First', 0, currentPage === 0));
+  div.appendChild(pgBtn('\u00AB', currentPage - 1, currentPage === 0));
+  const start = Math.max(0, currentPage - 3), end = Math.min(totalPages, currentPage + 4);
+  for (let i = start; i < end; i++) div.appendChild(pgBtn(String(i + 1), i, false, i === currentPage));
+  div.appendChild(pgBtn('\u00BB', currentPage + 1, currentPage >= totalPages - 1));
+  div.appendChild(pgBtn('Last', totalPages - 1, currentPage >= totalPages - 1));
+  div.appendChild(h('span', { className: 'pg-info' }, 'Page ' + (currentPage + 1) + ' of ' + totalPages));
+  return div;
+}
+
+// --- Authenticated download ---
+async function authenticatedDownload(remotePath, filename, btnElement) {
+  const origText = btnElement ? btnElement.textContent : '';
+  try {
+    if (btnElement) { btnElement.textContent = 'Downloading...'; btnElement.disabled = true; }
+    console.log('[ZotCloud Browser] Downloading: ' + remotePath);
+    const blob = await cloudDownloadBlob(remotePath);
+    console.log('[ZotCloud Browser] Blob size: ' + blob.size + ', type: ' + blob.type);
+
+    if (blob.size === 0) {
+      throw new Error('Server returned empty file (0 bytes)');
+    }
+
+    // In Zotero chrome:// context, use nsIFilePicker + IOUtils to save
+    if (typeof Components !== 'undefined') {
+      try {
+        const fp = Components.classes['@mozilla.org/filepicker;1']
+          .createInstance(Components.interfaces.nsIFilePicker);
+        fp.init(window, 'Save ' + filename, Components.interfaces.nsIFilePicker.modeSave);
+        fp.defaultString = filename;
+        const ext = filename.includes('.') ? filename.split('.').pop() : '';
+        if (ext) fp.defaultExtension = ext;
+        fp.appendFilters(Components.interfaces.nsIFilePicker.filterAll);
+        const rv = await new Promise(resolve => fp.open(resolve));
+        if (rv === Components.interfaces.nsIFilePicker.returnOK || rv === Components.interfaces.nsIFilePicker.returnReplace) {
+          const arrayBuf = await blob.arrayBuffer();
+          await IOUtils.write(fp.file.path, new Uint8Array(arrayBuf));
+          console.log('[ZotCloud Browser] Saved to: ' + fp.file.path);
+        }
+        if (btnElement) { btnElement.textContent = origText; btnElement.disabled = false; }
+        return;
+      } catch (e) {
+        console.log('[ZotCloud Browser] nsIFilePicker failed: ' + e + ', falling back to blob URL');
+      }
+    }
+
+    // Fallback: blob URL download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || remotePath.split('/').pop() || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    if (btnElement) { btnElement.textContent = origText; btnElement.disabled = false; }
+  } catch (err) {
+    console.error('[ZotCloud Browser] Download error:', err);
+    if (btnElement) { btnElement.textContent = origText; btnElement.disabled = false; }
+    alert('Download failed: ' + (err.message || String(err)) + '\nPath: ' + remotePath);
+  }
+}
+
+// --- Helpers ---
+function formatSize(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
+  return new Date(dateStr).toLocaleDateString();
+}
+
+// --- Credential persistence ---
+function saveCredentials() {
+  try {
+    localStorage.setItem('zotcloud_url', document.getElementById('webdav-url').value);
+    localStorage.setItem('zotcloud_user', document.getElementById('webdav-user').value);
+    localStorage.setItem('zotcloud_pass', document.getElementById('webdav-pass').value);
+    localStorage.setItem('zotcloud_folder', document.getElementById('webdav-folder').value);
+  } catch(e) { /* localStorage might not be available in chrome:// context */ }
+}
+
+function loadCredentials() {
+  try {
+    const url = localStorage.getItem('zotcloud_url');
+    const user = localStorage.getItem('zotcloud_user');
+    const pass = localStorage.getItem('zotcloud_pass');
+    const folder = localStorage.getItem('zotcloud_folder');
+    if (url) document.getElementById('webdav-url').value = url;
+    if (user) document.getElementById('webdav-user').value = user;
+    if (pass) document.getElementById('webdav-pass').value = pass;
+    if (folder) document.getElementById('webdav-folder').value = folder;
+    return !!(url && user);
+  } catch(e) { return false; }
+}
+
+// --- Provider mode: connect via plugin's sync engine ---
+async function connectProvider(key) {
+  const status = document.getElementById('conn-status');
+  status.textContent = 'Connecting...'; status.className = 'status';
+  try {
+    const conn = Zotero.ZotCloud.syncEngine.getConnection(key);
+    if (!conn) throw new Error('Provider "' + key + '" not connected in ZotCloud. Connect it first in ZotCloud Settings.');
+    activeProviderKey = key;
+    activeProvider = conn.provider;
+    cloudFolder = conn.cloudFolder || '/ZotCloud';
+    console.log('[ZotCloud Browser] Using provider: ' + conn.provider.getName() + ', folder: ' + cloudFolder);
+    await loadData();
+    status.textContent = 'Connected (' + conn.provider.getName() + ')'; status.className = 'status connected';
+    document.getElementById('btn-refresh-provider').style.display = '';
+  } catch (err) {
+    status.textContent = 'Error: ' + (err.message || err); status.className = 'status';
+    activeProviderKey = null;
+    activeProvider = null;
+  }
+}
+
+// --- Populate provider selector from active sync engine connections ---
+function setupProviderUI() {
+  const providerBar = document.getElementById('connect-bar-provider');
+  const webdavBar = document.getElementById('connect-bar-webdav');
+  const select = document.getElementById('provider-select');
+  let connections = [];
+
+  try {
+    if (Zotero && Zotero.ZotCloud && Zotero.ZotCloud.syncEngine) {
+      connections = Zotero.ZotCloud.syncEngine.getConnections();
+      console.log('[ZotCloud Browser] Found ' + connections.length + ' connected provider(s)');
+    } else {
+      console.log('[ZotCloud Browser] Zotero.ZotCloud.syncEngine not available', { Zotero: !!Zotero, ZotCloud: !!(Zotero && Zotero.ZotCloud) });
+    }
+  } catch(e) { console.log('[ZotCloud Browser] Cannot access syncEngine:', e); }
+
+  if (connections.length === 0) {
+    // No connected providers — show WebDAV connect bar only
+    providerBar.style.display = 'none';
+    webdavBar.style.display = '';
+    return null;
+  }
+
+  // Show provider bar, keep WebDAV bar visible for manual WebDAV connections
+  providerBar.style.display = '';
+
+  // Clear and populate select
+  while (select.firstChild) select.removeChild(select.firstChild);
+  for (const conn of connections) {
+    const opt = document.createElement('option');
+    opt.value = conn.key;
+    opt.textContent = conn.provider.getName() + ' (' + conn.key + ')';
+    select.appendChild(opt);
+  }
+
+  return connections[0]?.key || null;
+}
+
+document.getElementById('btn-connect-provider').addEventListener('click', () => {
+  const key = document.getElementById('provider-select').value;
+  if (key) connectProvider(key);
+});
+document.getElementById('btn-refresh-provider').addEventListener('click', loadData);
+
+// Step 1: Set up provider UI and load saved WebDAV credentials
+const defaultProviderKey = setupProviderUI();
+let hasLocalCreds = loadCredentials();
+
+// Step 2: Override with URL params if provided (from Zotero addon)
+const params = new URLSearchParams(location.search);
+if (params.get('url')) document.getElementById('webdav-url').value = params.get('url');
+if (params.get('user')) document.getElementById('webdav-user').value = params.get('user');
+if (params.get('pass')) document.getElementById('webdav-pass').value = params.get('pass');
+if (params.get('folder')) document.getElementById('webdav-folder').value = params.get('folder');
+
+// Step 3: Auto-connect — provider key from URL params takes priority
+const providerParam = params.get('provider');
+if (providerParam) {
+  // Connect via provider API (OAuth providers)
+  document.getElementById('connect-bar-webdav').style.display = 'none';
+  setTimeout(() => connectProvider(providerParam), 50);
+} else {
+  // WebDAV mode — auto-connect if we have credentials
+  const hasUrl = document.getElementById('webdav-url').value.trim();
+  const hasUser = document.getElementById('webdav-user').value.trim();
+  const hasPass = document.getElementById('webdav-pass').value;
+  if (hasUrl && hasUser && hasPass) {
+    setTimeout(() => connect(), 50);
+  } else if (defaultProviderKey && !hasUrl) {
+    // No WebDAV creds but have a provider — auto-connect to first provider
+    document.getElementById('connect-bar-webdav').style.display = 'none';
+    setTimeout(() => connectProvider(defaultProviderKey), 50);
+  }
+}
+</script>
+</body>
+</html>

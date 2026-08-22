@@ -1,0 +1,13 @@
+node_modules/
+.scaffold/
+build/
+*.xpi
+update.json
+*.DS_Store
+typings/
+.claude/
+CLAUDE.md
+.env
+ZotCloud_Architecture_Spec.md
+ZotCloud_Browser.html
+ZotCloud_Mockup_*.html

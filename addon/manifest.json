@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "__addonName__",
+  "version": "__buildVersion__",
+  "description": "Sync your Zotero library to cloud storage providers",
+  "homepage_url": "https://github.com/mapispev/zotero-zotcloud",
+  "author": "Prof. Dr. Sorin Hostiuc",
+  "icons": {
+    "48": "chrome/content/icons/zotcloud-48.svg",
+    "96": "chrome/content/icons/zotcloud-96.svg"
+  },
+  "applications": {
+    "zotero": {
+      "id": "zotcloud@sorin.hostiuc",
+      "update_url": "https://github.com/mapispev/zotero-zotcloud/releases/latest/download/update.json",
+      "strict_min_version": "6.999",
+      "strict_max_version": "9.*"
+    }
+  }
+}
