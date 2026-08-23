@@ -1,21 +1,44 @@
 # ZotCloud for Zotero
 
-ZotCloud synchronizes Zotero library data and attachments with a storage account chosen by the user. Version 0.1.0 includes providers for WebDAV, Google Drive, Dropbox, and pCloud.
+ZotCloud synchronizes your Zotero library with your own WebDAV server or a supported cloud account.
 
-## Features
+![ZotCloud overview](docs/images/zotcloud-overview.png)
 
-The plugin records local changes, queues transfers, and keeps a cloud manifest for each configured connection. It can upload and download attachments, resume periodic synchronization, organize remote filenames from item metadata, and present conflicts for review. Provider credentials and synchronization settings remain in the local Zotero profile.
+## What it can synchronize
+
+- Library metadata
+- Attachments
+- Notes
+- PDF annotations
+
+## Storage providers
+
+ZotCloud supports WebDAV, Google Drive, Dropbox, and pCloud. You can set the synchronization interval, maximum file size, automatic startup, and how the plugin responds to local changes.
+
+![ZotCloud providers](docs/images/zotcloud-providers.png)
+
+Optional AES-256 encryption protects files before upload. Naming and folder patterns can use fields such as author, year, title, journal, and item type.
+
+![ZotCloud settings](docs/images/zotcloud-settings.png)
+
+The built-in browser shows files, linked Zotero items, devices, and synchronization history.
 
 ## Installation
 
-Download `zotcloud-0.1.0.xpi` from the latest release. In Zotero, open `Tools > Plugins`, choose `Install Add-on From File`, and select the XPI. Configure a provider from the ZotCloud section of Zotero settings before starting the first synchronization.
+1. Download the latest `.xpi` from [Releases](https://github.com/sorinhostiuc/zotero-zotcloud/releases/latest).
+2. In Zotero, open **Tools > Plugins**.
+3. Choose **Install Plugin From File**, select the `.xpi`, and restart Zotero if asked.
 
-Version 0.1.0 is an early release. Back up the Zotero data directory and test with a small library before using it on a main collection. The supported Zotero range is 7-9.
+ZotCloud supports Zotero 7 through 9.
 
 ## Development
 
-Install Node.js, clone the repository, and run `npm ci`. Run `npm test` for the Vitest suite and `npm run build` to create the XPI. The current tests cover UUID generation, debouncing, and conflict resolution.
+```bash
+npm ci
+npm test
+npm run build
+```
 
 ## License
 
-ZotCloud is released under the MIT License. See [LICENSE](LICENSE).
+[MIT](LICENSE)
