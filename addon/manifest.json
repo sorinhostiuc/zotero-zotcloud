@@ -14,7 +14,7 @@
       "id": "zotcloud@sorin.hostiuc",
       "update_url": "https://github.com/sorinhostiuc/zotero-zotcloud/releases/latest/download/update.json",
       "strict_min_version": "6.999",
-      "strict_max_version": "9.*"
+      "strict_max_version": "10000000.*"
     }
   }
 }

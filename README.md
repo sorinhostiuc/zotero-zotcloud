@@ -29,7 +29,7 @@ The built-in browser shows files, linked Zotero items, devices, and synchronizat
 2. In Zotero, open **Tools > Plugins**.
 3. Choose **Install Plugin From File**, select the `.xpi`, and restart Zotero if asked.
 
-ZotCloud supports Zotero 7 through 9.
+ZotCloud supports Zotero 7 and later (including Zotero 10 and beyond).
 
 ## Development
 
