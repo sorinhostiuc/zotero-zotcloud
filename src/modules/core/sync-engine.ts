@@ -1521,9 +1521,13 @@ export class SyncEngine {
       return;
     }
 
-    // Check if there are remote changes
+    // Recover any snapshot-only data from other devices first (data that was
+    // compacted into a snapshot and pruned from the changelog).
+    await this.applyRemoteSnapshots(cloudFolder);
+
+    // Check if there are remote changelog changes
     if (!this.stateManager.hasRemoteChanges(manifest.vectorClock)) {
-      log("No remote changes detected");
+      log("No remote changelog changes detected");
       return;
     }
 
@@ -1557,8 +1561,13 @@ export class SyncEngine {
 
       files.sort((a, b) => a.name.localeCompare(b.name));
 
+      // Batches already folded into a snapshot we applied are redundant.
+      const appliedSnap = this.stateManager.getAppliedSnapshot(remoteDeviceId);
+
       for (const file of files) {
         if (!file.name.endsWith(".json") || file.isDirectory) continue;
+        const batchTsMatch = file.name.match(/^(\d+)/);
+        if (batchTsMatch && parseInt(batchTsMatch[1], 10) <= appliedSnap) continue;
 
         try {
           const data = await this.provider.download(file.path);
@@ -1939,57 +1948,137 @@ export class SyncEngine {
     await this.garbageCollect(meta.timestamp);
   }
 
-  /** Delete changelogs older than the given timestamp to save cloud space */
+  /**
+   * Delete OUR OWN device's changelogs/snapshots that a fresh snapshot has
+   * superseded. Critically, this never touches another device's changelog or
+   * snapshot: a snapshot only ever contains the creating device's local
+   * library (see Snapshot.generate), so deleting another device's data here —
+   * as the old code did across all device folders — permanently destroyed
+   * changes that no snapshot had captured. Each device prunes only its own.
+   */
   private async garbageCollect(beforeTimestamp: number): Promise<void> {
     if (!this.provider) return;
 
     const cloudFolder = this.getCloudFolder();
-    let deletedCount = 0;
+    const myDeviceId = this.stateManager.deviceId;
 
     try {
-      const changelogDir = `${cloudFolder}/changelog`;
-      const deviceDirs = await this.provider.list(changelogDir);
-
-      for (const dir of deviceDirs) {
-        if (!dir.isDirectory) continue;
-
-        const files = await this.provider.list(dir.path);
+      // 1. Prune only OUR OWN changelog batches older than our new snapshot.
+      let deletedCount = 0;
+      const ownChangelogDir = `${cloudFolder}/changelog/${myDeviceId}`;
+      try {
+        const files = await this.provider.list(ownChangelogDir);
         for (const file of files) {
           if (!file.name.endsWith(".json") || file.isDirectory) continue;
-
           const tsMatch = file.name.match(/^(\d+)/);
-          if (tsMatch) {
-            const fileTs = parseInt(tsMatch[1], 10);
-            if (fileTs < beforeTimestamp) {
-              await this.provider.delete(file.path);
-              deletedCount++;
-            }
+          if (tsMatch && parseInt(tsMatch[1], 10) < beforeTimestamp) {
+            await this.provider.delete(file.path);
+            deletedCount++;
           }
         }
-      }
-
+      } catch { /* our changelog dir may not exist yet */ }
       if (deletedCount > 0) {
-        log(`Garbage collected ${deletedCount} old changelog files`);
+        log(`Garbage collected ${deletedCount} of our own old changelog files`);
       }
 
+      // 2. Snapshot retention: keep each device's newest snapshot (its
+      //    baseline), but only ever delete OUR OWN older snapshots.
       const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
       const snapshotFiles = snapshots
-        .filter((f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json"))
-        .sort((a, b) => b.name.localeCompare(a.name));
+        .filter((f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory)
+        .sort((a, b) => b.name.localeCompare(a.name)); // newest first
 
-      for (let i = 2; i < snapshotFiles.length; i++) {
-        await this.provider.delete(snapshotFiles[i].path);
-        const metaName = snapshotFiles[i].name.replace(".json", ".meta.json");
+      let keptOwn = false;
+      for (const snap of snapshotFiles) {
+        const owner = await this.snapshotOwner(cloudFolder, snap.name);
+        // Unknown owner or another device → leave it alone.
+        if (owner !== myDeviceId) continue;
+        if (!keptOwn) { keptOwn = true; continue; } // keep our newest
+        await this.provider.delete(snap.path);
+        const metaName = snap.name.replace(/\.json$/, ".meta.json");
         try {
-          await this.provider.delete(
-            `${cloudFolder}/snapshots/${metaName}`,
-          );
+          await this.provider.delete(`${cloudFolder}/snapshots/${metaName}`);
         } catch { /* ignore */ }
       }
 
       await ChangeLog.deleteOlderThan(beforeTimestamp);
     } catch (err) {
       logError("Garbage collection failed", err);
+    }
+  }
+
+  /** Read a snapshot's owning deviceId from its .meta.json (null if unknown). */
+  private async snapshotOwner(cloudFolder: string, snapshotName: string): Promise<string | null> {
+    if (!this.provider) return null;
+    try {
+      const metaName = snapshotName.replace(/\.json$/, ".meta.json");
+      const data = await this.provider.download(`${cloudFolder}/snapshots/${metaName}`);
+      const meta = JSON.parse(this.decodeBuffer(data));
+      return typeof meta?.deviceId === "string" ? meta.deviceId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Map each device to its newest snapshot on the cloud (keyed by meta.deviceId). */
+  private async snapshotsByDevice(
+    cloudFolder: string,
+  ): Promise<Map<string, { timestamp: number; path: string }>> {
+    const result = new Map<string, { timestamp: number; path: string }>();
+    if (!this.provider) return result;
+
+    let snapshotFiles: FileMetadata[];
+    try {
+      const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
+      snapshotFiles = snapshots.filter(
+        (f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory,
+      );
+    } catch {
+      return result;
+    }
+
+    for (const snap of snapshotFiles) {
+      const tsMatch = snap.name.match(/^(\d+)/);
+      if (!tsMatch) continue;
+      const timestamp = parseInt(tsMatch[1], 10);
+      const owner = await this.snapshotOwner(cloudFolder, snap.name);
+      if (!owner) continue;
+      const existing = result.get(owner);
+      if (!existing || timestamp > existing.timestamp) {
+        result.set(owner, { timestamp, path: snap.path });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Apply each OTHER device's latest not-yet-applied snapshot. This is how a
+   * device recovers changes that were compacted into a snapshot and pruned from
+   * the changelog: the old incremental pull() read only changelogs, so once a
+   * device's changes lived only in its snapshot they were never picked up.
+   * Idempotent — applyRemoteEvent upserts by key, and appliedSnapshot markers
+   * stop us re-applying the same snapshot every cycle.
+   */
+  private async applyRemoteSnapshots(cloudFolder: string): Promise<void> {
+    if (!this.provider) return;
+
+    const byDevice = await this.snapshotsByDevice(cloudFolder);
+    for (const [deviceId, snap] of byDevice) {
+      if (deviceId === this.stateManager.deviceId) continue;
+      if (snap.timestamp <= this.stateManager.getAppliedSnapshot(deviceId)) continue;
+
+      try {
+        const data = await this.provider.download(snap.path);
+        const events: ChangeEvent[] = JSON.parse(this.decodeBuffer(data));
+        if (!Array.isArray(events) || events.length === 0) continue;
+        log(`Applying ${deviceId} snapshot (${events.length} events)`);
+        for (const event of events) {
+          await this.applyRemoteEvent(event);
+        }
+        this.stateManager.setAppliedSnapshot(deviceId, snap.timestamp);
+      } catch (err) {
+        logError(`Failed to apply snapshot for device ${deviceId}`, err);
+      }
     }
   }
 

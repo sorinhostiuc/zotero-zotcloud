@@ -42,6 +42,10 @@ async function onStartup() {
     // Initialize sync engine
     syncEngine = new SyncEngine(stateManager, changeTracker);
 
+    // A local edit should schedule a (debounced) sync, not wait up to 5 minutes
+    // for the periodic timer.
+    changeTracker.setOnChange(() => syncEngine?.scheduleSync());
+
     // Expose for UI access
     (Zotero.ZotCloud as any).stateManager = stateManager;
     (Zotero.ZotCloud as any).changeTracker = changeTracker;

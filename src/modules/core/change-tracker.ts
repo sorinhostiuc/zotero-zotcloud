@@ -1,5 +1,6 @@
 import { ChangeEvent, ChangeEventData, Creator, Tag } from "./types";
 import { StateManager } from "./state-manager";
+import { ChangeLog } from "./change-log";
 import { generateUUID } from "../utils/uuid";
 import { log, logError } from "../utils/logger";
 
@@ -18,9 +19,15 @@ export class ChangeTracker {
   private stateManager: StateManager;
   private pendingEvents: ChangeEvent[] = [];
   private _isSyncing = false;
+  private onChange: (() => void) | null = null;
 
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
+  }
+
+  /** Register a callback fired after new local changes are captured+persisted. */
+  setOnChange(cb: () => void) {
+    this.onChange = cb;
   }
 
   /** Whether we are currently applying remote changes (skip local tracking) */
@@ -91,6 +98,7 @@ export class ChangeTracker {
     // Skip events while we're applying remote changes
     if (this._isSyncing) return;
 
+    const built: ChangeEvent[] = [];
     for (const id of ids) {
       const changeEvent = await this.buildChangeEvent(
         event,
@@ -100,9 +108,25 @@ export class ChangeTracker {
       );
       if (changeEvent) {
         this.pendingEvents.push(changeEvent);
-        this.stateManager.pendingChanges = this.pendingEvents.length;
+        built.push(changeEvent);
       }
     }
+    if (built.length === 0) return;
+    this.stateManager.pendingChanges = this.pendingEvents.length;
+
+    // Persist to the change log IMMEDIATELY. Previously events lived only in the
+    // in-memory pendingEvents array until the next syncNow drained them, so an
+    // edit followed by a quit/crash before a sync was lost entirely. Also nudge
+    // the engine to schedule a (debounced) sync instead of waiting for the
+    // 5-minute periodic timer.
+    try {
+      await ChangeLog.appendBatch(built);
+    } catch (err) {
+      logError("Failed to persist change events", err);
+    }
+    try {
+      this.onChange?.();
+    } catch { /* scheduling is best-effort */ }
   }
 
   private async buildChangeEvent(
