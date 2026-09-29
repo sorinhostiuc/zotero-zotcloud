@@ -961,6 +961,7 @@ export class SyncEngine {
       logError("Pull from cloud failed", err);
       throw err;
     } finally {
+      this.flushApplyErrors();
       this._isSyncing = false;
     }
   }
@@ -968,24 +969,33 @@ export class SyncEngine {
   /**
    * Apply a remote event, ignoring the deviceId check (used by directional sync).
    */
-  private static _applyErrorsLogged = 0;
+  private static _applyErrors: string[] = [];
 
-  /** Append an apply failure to a data-dir file so the actual cause is readable. */
+  /** Buffer an apply failure (written to disk + a pref by flushApplyErrors). */
   private recordApplyError(text: string): void {
-    if (SyncEngine._applyErrorsLogged >= 100) return;
-    SyncEngine._applyErrorsLogged++;
-    try {
-      const path = PathUtils.join(Zotero.DataDirectory.dir, "zotcloud-apply-errors.log");
-      IOUtils.write(path, new TextEncoder().encode(text + "\n"), { mode: "append" }).catch(() => {});
-    } catch { /* ignore */ }
+    if (SyncEngine._applyErrors.length < 200) SyncEngine._applyErrors.push(text);
   }
 
-  /** Clear the apply-error capture at the start of a run. */
+  /** Clear the apply-error buffer at the start of a run. */
   private resetApplyErrorLog(): void {
-    SyncEngine._applyErrorsLogged = 0;
+    SyncEngine._applyErrors = [];
+  }
+
+  /**
+   * Write the buffered apply errors so the actual cause is readable offline:
+   * a file (overwrite mode — always creates) AND a pref (a short sample), since
+   * IOUtils append-mode fails on a missing file and a pref is guaranteed.
+   */
+  private flushApplyErrors(): void {
+    const errs = SyncEngine._applyErrors;
+    if (errs.length === 0) return;
     try {
       const path = PathUtils.join(Zotero.DataDirectory.dir, "zotcloud-apply-errors.log");
-      IOUtils.remove(path).catch(() => {});
+      IOUtils.write(path, new TextEncoder().encode(errs.join("\n") + "\n")).catch(() => {});
+    } catch { /* ignore */ }
+    try {
+      Zotero.Prefs.set("extensions.zotcloud._applyErrorsSample", errs.slice(0, 3).join(" ||| ").slice(0, 900));
+      Zotero.Prefs.set("extensions.zotcloud._applyErrorsCount", errs.length);
     } catch { /* ignore */ }
   }
 
@@ -1667,6 +1677,7 @@ export class SyncEngine {
     await applyMatching((e) => e.type !== "delete" && e.entityType === "item" && !!e.data.parentKey);
 
     this.stateManager.mergeClock(manifest.vectorClock);
+    this.flushApplyErrors();
   }
 
   /** Apply a single remote change event to the local Zotero library */
