@@ -342,6 +342,25 @@ export class WebDAVProvider implements CloudProvider {
 
   // --- HTTP helpers ---
 
+  private static B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  /** Build an "Authorization: Basic" header without relying on btoa (UTF-8 safe). */
+  private basicAuthHeader(): string {
+    const bytes = new TextEncoder().encode(`${this.username}:${this.password}`);
+    const t = WebDAVProvider.B64;
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 3) {
+      const b0 = bytes[i];
+      const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+      const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      out += t[b0 >> 2];
+      out += t[((b0 & 3) << 4) | (b1 >> 4)];
+      out += i + 1 < bytes.length ? t[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+      out += i + 2 < bytes.length ? t[b2 & 63] : "=";
+    }
+    return "Basic " + out;
+  }
+
   private resolvePath(remotePath: string): string {
     const cleanPath = remotePath.startsWith("/") ? remotePath : "/" + remotePath;
     // Percent-encode each path segment. Without this, new URL() in rawRequest
@@ -427,22 +446,21 @@ export class WebDAVProvider implements CloudProvider {
     extraHeaders?: Record<string, string>,
     responseType?: XMLHttpRequestResponseType,
   ): Promise<XMLHttpRequest> {
-    // Embed credentials in URL for Gecko auth negotiation
-    let authUrl: string;
-    try {
-      const parsed = new URL(url);
-      parsed.username = this.username;
-      parsed.password = this.password;
-      authUrl = parsed.toString();
-    } catch {
-      authUrl = url.replace("://", `://${encodeURIComponent(this.username)}:${encodeURIComponent(this.password)}@`);
-    }
+    // Send credentials in an Authorization: Basic header, NOT embedded in the
+    // URL. URL-embedded credentials get written verbatim — password included —
+    // into Zotero's own HTTP debug log (http://user:pass@host…). A header keeps
+    // the password out of the logs. (This does not add wire encryption; see the
+    // http:// note below — use https or a VPN/Tailscale tunnel for that.)
+    const headers: Record<string, string> = {
+      ...(extraHeaders || {}),
+      Authorization: this.basicAuthHeader(),
+    };
 
-    log(`${method} ${url} (auth via URL credentials)`);
+    log(`${method} ${url}`);
 
     try {
-      const response = await Zotero.HTTP.request(method, authUrl, {
-        headers: extraHeaders || {},
+      const response = await Zotero.HTTP.request(method, url, {
+        headers,
         body: body || undefined,
         responseType: responseType || "text",
         timeout: 30000,

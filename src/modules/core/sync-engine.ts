@@ -738,6 +738,7 @@ export class SyncEngine {
 
     this._isSyncing = true;
     this.stateManager.status = "syncing";
+    this.resetApplyErrorLog();
     log("Pull from cloud: applying cloud state to local library...");
 
     const em = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -967,7 +968,29 @@ export class SyncEngine {
   /**
    * Apply a remote event, ignoring the deviceId check (used by directional sync).
    */
-  private async applyRemoteEventForced(event: ChangeEvent): Promise<void> {
+  private static _applyErrorsLogged = 0;
+
+  /** Append an apply failure to a data-dir file so the actual cause is readable. */
+  private recordApplyError(text: string): void {
+    if (SyncEngine._applyErrorsLogged >= 100) return;
+    SyncEngine._applyErrorsLogged++;
+    try {
+      const path = PathUtils.join(Zotero.DataDirectory.dir, "zotcloud-apply-errors.log");
+      IOUtils.write(path, new TextEncoder().encode(text + "\n"), { mode: "append" }).catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  /** Clear the apply-error capture at the start of a run. */
+  private resetApplyErrorLog(): void {
+    SyncEngine._applyErrorsLogged = 0;
+    try {
+      const path = PathUtils.join(Zotero.DataDirectory.dir, "zotcloud-apply-errors.log");
+      IOUtils.remove(path).catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  private async applyRemoteEventForced(event: ChangeEvent): Promise<boolean> {
+    let applyOk = true;
     this.changeTracker.isSyncing = true;
     try {
       if (event.entityType === "item") {
@@ -976,10 +999,16 @@ export class SyncEngine {
         await this.applyCollectionEvent(event);
       }
     } catch (err) {
-      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${err instanceof Error ? err.message : String(err)}`, err);
+      const detail = err instanceof Error
+        ? `${err.message}${err.stack ? " | " + err.stack.split("\n").slice(0, 4).join(" <> ") : ""}`
+        : String(err);
+      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${detail}`, err);
+      this.recordApplyError(`${event.type} ${event.entityType}:${event.entityKey} -> ${detail}`);
+      applyOk = false;
     } finally {
       this.changeTracker.isSyncing = false;
     }
+    return applyOk;
   }
 
   /**
@@ -1641,9 +1670,10 @@ export class SyncEngine {
   }
 
   /** Apply a single remote change event to the local Zotero library */
-  private async applyRemoteEvent(event: ChangeEvent): Promise<void> {
-    if (event.deviceId === this.stateManager.deviceId) return;
+  private async applyRemoteEvent(event: ChangeEvent): Promise<boolean> {
+    if (event.deviceId === this.stateManager.deviceId) return true;
 
+    let applyOk = true;
     this.changeTracker.isSyncing = true;
 
     try {
@@ -1653,10 +1683,16 @@ export class SyncEngine {
         await this.applyCollectionEvent(event);
       }
     } catch (err) {
-      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${err instanceof Error ? err.message : String(err)}`, err);
+      const detail = err instanceof Error
+        ? `${err.message}${err.stack ? " | " + err.stack.split("\n").slice(0, 4).join(" <> ") : ""}`
+        : String(err);
+      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${detail}`, err);
+      this.recordApplyError(`${event.type} ${event.entityType}:${event.entityKey} -> ${detail}`);
+      applyOk = false;
     } finally {
       this.changeTracker.isSyncing = false;
     }
+    return applyOk;
   }
 
   private async applyItemEvent(event: ChangeEvent): Promise<void> {
@@ -2135,6 +2171,7 @@ export class SyncEngine {
         if (!Array.isArray(events) || events.length === 0) continue;
 
         let added = 0;
+        let failed = 0;
         for (const event of events) {
           const key = `${event.entityType}:${event.entityKey}`;
           if (deletedKeys.has(key)) continue; // don't resurrect our own deletions
@@ -2142,11 +2179,15 @@ export class SyncEngine {
             ? !!Zotero.Collections.getByLibraryAndKey(event.libraryID, event.entityKey)
             : !!Zotero.Items.getByLibraryAndKey(event.libraryID, event.entityKey);
           if (exists) continue; // add-only: keep the local copy
-          await this.applyRemoteEvent(event);
-          added++;
+          const ok = await this.applyRemoteEvent(event);
+          if (ok) added++; else failed++;
         }
-        this.stateManager.setAppliedSnapshot(deviceId, snap.timestamp);
-        log(`Applied ${deviceId} snapshot: ${added} new entities (of ${events.length})`);
+        // Only mark the snapshot applied if everything landed. Marking it after
+        // failures would permanently skip it on later syncs (poisoned marker).
+        if (failed === 0) {
+          this.stateManager.setAppliedSnapshot(deviceId, snap.timestamp);
+        }
+        log(`Applied ${deviceId} snapshot: ${added} new entities, ${failed} failed (of ${events.length})`);
       } catch (err) {
         logError(`Failed to apply snapshot for device ${deviceId}`, err);
       }
