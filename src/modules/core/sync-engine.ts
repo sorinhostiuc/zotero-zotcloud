@@ -477,22 +477,27 @@ export class SyncEngine {
     let cloudEvents: ChangeEvent[] = [];
 
     try {
-      const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
-      const snapshotFiles = snapshots
-        .filter((f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory)
-        .sort((a, b) => b.name.localeCompare(a.name));
-
-      if (snapshotFiles.length > 0) {
-        log(`Reading cloud snapshot: ${snapshotFiles[0].name}`);
-        const snapshotData = await this.provider.download(snapshotFiles[0].path);
-        const json = new TextDecoder().decode(snapshotData);
-        cloudEvents = JSON.parse(json);
-
-        for (const event of cloudEvents) {
-          if (event.entityType === "item") cloudItemKeys.add(event.entityKey);
-          if (event.entityType === "collection") cloudCollectionKeys.add(event.entityKey);
+      // Merge EVERY device's latest snapshot (oldest→newest so the newest copy
+      // wins on overlaps) — not just the globally-newest one, or a peer's entire
+      // library would be missed (e.g. a fresh 56-item snapshot hiding a 20k one).
+      const byDevice = await this.snapshotsByDevice(cloudFolder);
+      const perDevice = Array.from(byDevice.values()).sort((a, b) => a.timestamp - b.timestamp);
+      for (const snap of perDevice) {
+        try {
+          const snapshotData = await this.provider.download(snap.path);
+          const evts: ChangeEvent[] = JSON.parse(new TextDecoder().decode(snapshotData));
+          if (Array.isArray(evts)) cloudEvents.push(...evts);
+        } catch (err) {
+          log(`Could not read snapshot ${snap.path}: ${String(err)}`);
         }
-        log(`Cloud snapshot: ${cloudItemKeys.size} items, ${cloudCollectionKeys.size} collections`);
+      }
+
+      for (const event of cloudEvents) {
+        if (event.entityType === "item") cloudItemKeys.add(event.entityKey);
+        if (event.entityType === "collection") cloudCollectionKeys.add(event.entityKey);
+      }
+      if (perDevice.length > 0) {
+        log(`Cloud snapshots (${perDevice.length} device(s)): ${cloudItemKeys.size} items, ${cloudCollectionKeys.size} collections`);
       } else {
         log("No cloud snapshot found — will push entire local library");
       }
@@ -792,40 +797,32 @@ export class SyncEngine {
 
         let providerApplied = 0;
 
-        // 1) Apply the newest NON-EMPTY snapshot. Older snapshots are tried if
-        //    the newest is empty (a prior bad push can leave an empty snapshot).
-        let snapshotFiles: FileMetadata[] = [];
-        try {
-          const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
-          snapshotFiles = snapshots
-            .filter((f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory)
-            .sort((a, b) => b.name.localeCompare(a.name));
-        } catch (err) {
-          warnings.push(`${label}: cannot list snapshots — ${em(err)}`);
-        }
+        // 1) Apply the newest snapshot PER DEVICE. Snapshots are per-device
+        //    full-library dumps, so applying only the single globally-newest one
+        //    silently drops every other device's library — e.g. a fresh 56-item
+        //    snapshot from this device shadowing the peer's 20k snapshot. Apply
+        //    oldest→newest so the most recent copy wins on any overlapping key.
+        const byDevice = await this.snapshotsByDevice(cloudFolder);
+        const perDevice = Array.from(byDevice.values()).sort((a, b) => a.timestamp - b.timestamp);
         let snapshotApplied = false;
-        for (const snap of snapshotFiles) {
+        for (const snap of perDevice) {
           let events: ChangeEvent[];
           try {
             const snapshotData = await this.provider.download(snap.path);
             events = JSON.parse(this.decodeBuffer(snapshotData));
           } catch (err) {
-            warnings.push(`${label}: failed to read snapshot ${snap.name} — ${em(err)}`);
+            warnings.push(`${label}: failed to read snapshot ${snap.path} — ${em(err)}`);
             continue;
           }
-          if (!Array.isArray(events) || events.length === 0) {
-            log(`Snapshot ${snap.name} is empty — trying older snapshot`);
-            continue;
-          }
-          log(`Applying snapshot ${snap.name} (${events.length} events)`);
+          if (!Array.isArray(events) || events.length === 0) continue;
+          log(`Applying snapshot ${snap.path} (${events.length} events)`);
           const r = await applyEvents(events);
           providerApplied += r.applied;
           snapshotApplied = true;
-          summaries.push(`${label}: snapshot ${snap.name} → ${r.applied}/${events.length}` + (r.failed ? ` (${r.failed} failed: ${r.firstErr})` : ""));
-          break;
+          summaries.push(`${label}: snapshot ${snap.path} → ${r.applied}/${events.length}` + (r.failed ? ` (${r.failed} failed: ${r.firstErr})` : ""));
         }
         if (!snapshotApplied) {
-          summaries.push(`${label}: no usable snapshot (${snapshotFiles.length} file(s), all empty/unreadable)`);
+          summaries.push(`${label}: no usable snapshot (${perDevice.length} device snapshot(s), all empty/unreadable)`);
         }
 
         // 2) Replay ALL changelog batches from ALL devices (forced). This is how
@@ -871,7 +868,7 @@ export class SyncEngine {
         totalApplied += providerApplied;
 
         if (providerApplied === 0) {
-          throw new Error(`${label}: cloud has no recoverable data (snapshots: ${snapshotFiles.length}, changelog batches: ${changelogBatches})`);
+          throw new Error(`${label}: cloud has no recoverable data (device snapshots: ${perDevice.length}, changelog batches: ${changelogBatches})`);
         }
 
         // Download attachments (non-fatal — reported as a warning if it fails)
@@ -1171,24 +1168,28 @@ export class SyncEngine {
       `${cloudFolder}/changelog/${this.stateManager.deviceId}`,
     );
 
-    // Try to restore from latest snapshot first
+    // Restore EACH device's latest snapshot (oldest→newest so the newest copy
+    // wins on overlaps) — not just the globally-newest one, which would drop a
+    // peer's whole library.
     let snapshotTimestamp = 0;
     try {
-      const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
-      const snapshotFiles = snapshots
-        .filter((f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory)
-        .sort((a, b) => b.name.localeCompare(a.name));
-
-      if (snapshotFiles.length > 0) {
-        log(`Restoring from snapshot: ${snapshotFiles[0].name}`);
-        const snapshotData = await this.provider.download(snapshotFiles[0].path);
-        const libraryID = Zotero.Libraries.userLibraryID;
-        await Snapshot.restore(snapshotData, libraryID);
-
-        const tsMatch = snapshotFiles[0].name.match(/^(\d+)\./);
-        if (tsMatch) snapshotTimestamp = parseInt(tsMatch[1], 10);
-
-        log(`Snapshot restored, will apply changelogs after ${new Date(snapshotTimestamp).toISOString()}`);
+      const byDevice = await this.snapshotsByDevice(cloudFolder);
+      const perDevice = Array.from(byDevice.values()).sort((a, b) => a.timestamp - b.timestamp);
+      const libraryID = Zotero.Libraries.userLibraryID;
+      for (const snap of perDevice) {
+        try {
+          log(`Restoring from snapshot: ${snap.path} (ts=${snap.timestamp})`);
+          const snapshotData = await this.provider.download(snap.path);
+          await Snapshot.restore(snapshotData, libraryID);
+        } catch (err) {
+          logError(`Snapshot restore failed for ${snap.path}`, err);
+        }
+      }
+      if (perDevice.length > 0) {
+        // Replay changelogs after the OLDEST snapshot so anything written between
+        // one device's snapshot and another's is not skipped (replay is idempotent).
+        snapshotTimestamp = perDevice[0].timestamp;
+        log(`Restored ${perDevice.length} device snapshot(s); replaying changelogs after ${new Date(snapshotTimestamp).toISOString()}`);
       }
     } catch (err) {
       logError("Snapshot restore failed, falling back to full changelog replay", err);
