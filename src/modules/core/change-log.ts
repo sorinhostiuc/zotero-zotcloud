@@ -166,6 +166,17 @@ export class ChangeLog {
     return rows?.[0]?.cnt || 0;
   }
 
+  /** Keys ("entityType:entityKey") this device has a local delete for. */
+  static async deletedEntityKeys(): Promise<Set<string>> {
+    await this.init();
+    const rows = await Zotero.DB.queryAsync(
+      `SELECT entityType, entityKey FROM ${this.TABLE} WHERE type = 'delete'`,
+    );
+    const set = new Set<string>();
+    for (const r of rows || []) set.add(`${r.entityType}:${r.entityKey}`);
+    return set;
+  }
+
   /** Get count of unsynced events */
   static async unsyncedCount(): Promise<number> {
     await this.init();

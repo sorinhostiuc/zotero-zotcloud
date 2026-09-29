@@ -1617,9 +1617,11 @@ export class SyncEngine {
       }
     }
 
-    // Collapse to the LAST event per entity (changelogs are time-ordered, so the
-    // newest wins — this makes an add+delete or delete+re-add in the same round
-    // resolve correctly regardless of the type-ordered apply below).
+    // Collapse to the last event per entity so an add+delete / delete+re-add from
+    // ONE device in the same round resolves to its final state regardless of the
+    // type-ordered apply below. (Across devices the last-iterated device wins, as
+    // in the previous behavior; genuine cross-device field conflicts are handled
+    // by the changelog conflict resolver above, not here.)
     const latest = new Map<string, ChangeEvent>();
     for (const e of toApply) latest.set(`${e.entityType}:${e.entityKey}`, e);
     const finalEvents = Array.from(latest.values());
@@ -2101,6 +2103,16 @@ export class SyncEngine {
     if (!this.provider) return;
 
     const byDevice = await this.snapshotsByDevice(cloudFolder);
+    if (byDevice.size === 0) return;
+
+    // A snapshot is the peer's FULL library at compaction time, emitted as
+    // "add" events with no per-item timestamps and no tombstones. So it is only
+    // safe to use it to FILL GAPS — never to overwrite an entity we already have
+    // (that could revert a newer local edit) and never to recreate something we
+    // deleted locally (tombstone check below). Updates to existing items arrive
+    // through the peer's changelog, which is conflict-resolved separately.
+    const deletedKeys = await ChangeLog.deletedEntityKeys();
+
     for (const [deviceId, snap] of byDevice) {
       if (deviceId === this.stateManager.deviceId) continue;
       if (snap.timestamp <= this.stateManager.getAppliedSnapshot(deviceId)) continue;
@@ -2109,11 +2121,20 @@ export class SyncEngine {
         const data = await this.provider.download(snap.path);
         const events: ChangeEvent[] = JSON.parse(this.decodeBuffer(data));
         if (!Array.isArray(events) || events.length === 0) continue;
-        log(`Applying ${deviceId} snapshot (${events.length} events)`);
+
+        let added = 0;
         for (const event of events) {
+          const key = `${event.entityType}:${event.entityKey}`;
+          if (deletedKeys.has(key)) continue; // don't resurrect our own deletions
+          const exists = event.entityType === "collection"
+            ? !!Zotero.Collections.getByLibraryAndKey(event.libraryID, event.entityKey)
+            : !!Zotero.Items.getByLibraryAndKey(event.libraryID, event.entityKey);
+          if (exists) continue; // add-only: keep the local copy
           await this.applyRemoteEvent(event);
+          added++;
         }
         this.stateManager.setAppliedSnapshot(deviceId, snap.timestamp);
+        log(`Applied ${deviceId} snapshot: ${added} new entities (of ${events.length})`);
       } catch (err) {
         logError(`Failed to apply snapshot for device ${deviceId}`, err);
       }

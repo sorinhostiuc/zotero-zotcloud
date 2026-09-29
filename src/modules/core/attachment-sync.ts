@@ -102,25 +102,20 @@ export class AttachmentSync {
       this.manifest = JSON.parse(new TextDecoder().decode(data));
       return;
     } catch (err) {
-      // Only treat a genuinely-absent manifest as empty. A transient/server
-      // error must NOT reset it — otherwise the next saveManifest() would
-      // overwrite the cloud copy and wipe every hash→file mapping.
-      let absent = false;
-      try {
-        if (typeof (this.provider as any).exists === "function") {
-          absent = !(await (this.provider as any).exists(manifestPath));
-        } else {
-          absent = this.manifest === null; // no exists() → only assume absent on first load
-        }
-      } catch {
-        absent = this.manifest === null;
-      }
+      // Only treat a genuinely-absent manifest (404 / not found) as empty. A
+      // transient/server error must NOT reset it — otherwise the next
+      // saveManifest() would overwrite the cloud copy and wipe every hash→file
+      // mapping. We key off the download error message (providers throw a
+      // "not found"/404 error on absence) rather than a second, correlated
+      // exists() request that also fails during the same outage.
+      const msg = err instanceof Error ? err.message : String(err);
+      const absent = /\bnot found\b|(^|[^0-9])404([^0-9]|$)/i.test(msg);
       if (absent) {
         this.manifest = { files: {} };
       } else if (!this.manifest) {
-        // Couldn't confirm absence and nothing cached → fail loudly so callers
-        // skip rather than persist an empty manifest over the real one.
-        throw err instanceof Error ? err : new Error(String(err));
+        // Unknown error and nothing cached → fail loudly so callers skip rather
+        // than persist an empty manifest over the real one.
+        throw err instanceof Error ? err : new Error(msg);
       }
       // else: keep the previously-loaded manifest.
     }
