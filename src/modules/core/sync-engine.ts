@@ -976,7 +976,7 @@ export class SyncEngine {
         await this.applyCollectionEvent(event);
       }
     } catch (err) {
-      logError(`Failed to apply ${event.type} for ${event.entityKey}`, err);
+      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${err instanceof Error ? err.message : String(err)}`, err);
     } finally {
       this.changeTracker.isSyncing = false;
     }
@@ -1653,7 +1653,7 @@ export class SyncEngine {
         await this.applyCollectionEvent(event);
       }
     } catch (err) {
-      logError(`Failed to apply ${event.type} for ${event.entityKey}`, err);
+      logError(`Failed to apply ${event.type} for ${event.entityKey}: ${err instanceof Error ? err.message : String(err)}`, err);
     } finally {
       this.changeTracker.isSyncing = false;
     }
@@ -1673,12 +1673,17 @@ export class SyncEngine {
         }
 
         if (!item) {
-          item = new Zotero.Item();
+          // Construct WITH the type — a typeless `new Zotero.Item()` cannot be
+          // saved, and setType() on an already-constructed item is unreliable
+          // across Zotero versions. This is the create path that was throwing
+          // for every incoming item.
+          const newTypeID = event.data.fields?.itemType
+            ? Zotero.ItemTypes.getID(event.data.fields.itemType)
+            : false;
+          item = new Zotero.Item(newTypeID || "document");
           item.libraryID = event.libraryID;
           item.key = event.entityKey;
-        }
-
-        if (event.data.fields?.itemType) {
+        } else if (event.data.fields?.itemType) {
           const typeID = Zotero.ItemTypes.getID(event.data.fields.itemType);
           if (typeID) item.setType(typeID);
         }
@@ -1732,17 +1737,23 @@ export class SyncEngine {
           } catch { /* some annotation props may not be settable */ }
         }
 
-        // Collection membership (top-level items only; children inherit parent).
+        await item.saveTx({ skipNotifier: true });
+
+        // Collection membership — set AFTER the item exists (setCollections on an
+        // unsaved item is unreliable). Top-level items only; children inherit.
         if (event.data.collections && !event.data.parentKey) {
           const collIDs: number[] = [];
           for (const key of event.data.collections) {
             const coll = Zotero.Collections.getByLibraryAndKey(event.libraryID, key);
             if (coll) collIDs.push(coll.id);
           }
-          try { item.setCollections(collIDs); } catch { /* skip */ }
+          if (collIDs.length > 0) {
+            try {
+              item.setCollections(collIDs);
+              await item.saveTx({ skipNotifier: true });
+            } catch { /* non-fatal */ }
+          }
         }
-
-        await item.saveTx({ skipNotifier: true });
 
         if (event.data.attachmentHash && this.attachmentSync && item.isAttachment()) {
           await this.attachmentSync.downloadAttachment(
