@@ -17,6 +17,9 @@ export class StateManager {
   private _lastSuccessfulSync: number = 0;
   private _pendingChanges: number = 0;
 
+  private static CLOCK_PREF = "extensions.zotcloud.vectorClock";
+  private static APPLIED_SNAPSHOTS_PREF = "extensions.zotcloud.appliedSnapshots";
+
   async init() {
     // Load or generate device ID
     let storedId = Zotero.Prefs.get("extensions.zotcloud.deviceId") as string;
@@ -34,16 +37,67 @@ export class StateManager {
       Zotero.Prefs.set("extensions.zotcloud.deviceName", deviceName);
     }
 
-    // Initialize vector clock with this device
-    this.vectorClock[this.deviceId] = 0;
+    // Load the PERSISTED vector clock. Previously this was hard-reset to
+    // { [deviceId]: 0 } on every launch, so the device forgot which remote
+    // changes it had already applied — forcing a full re-export each session
+    // (which in turn triggered the destructive snapshot/GC path).
+    this.vectorClock = this.loadClock();
+    if (this.vectorClock[this.deviceId] === undefined) {
+      this.vectorClock[this.deviceId] = 0;
+    }
 
     log("StateManager initialized");
+  }
+
+  /** Load the persisted vector clock from prefs (empty if none/invalid). */
+  private loadClock(): VectorClock {
+    try {
+      const raw = Zotero.Prefs.get(StateManager.CLOCK_PREF) as string;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") return parsed as VectorClock;
+      }
+    } catch { /* ignore malformed pref */ }
+    return {};
+  }
+
+  /** Persist the vector clock so it survives restarts. */
+  private persistClock() {
+    try {
+      Zotero.Prefs.set(StateManager.CLOCK_PREF, JSON.stringify(this.vectorClock));
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Highest snapshot timestamp already applied from a given device, so
+   * incremental pulls can restore a compacted snapshot exactly once and then
+   * replay only the changelog batches newer than it.
+   */
+  getAppliedSnapshot(deviceId: string): number {
+    try {
+      const raw = Zotero.Prefs.get(StateManager.APPLIED_SNAPSHOTS_PREF) as string;
+      if (raw) {
+        const map = JSON.parse(raw);
+        if (map && typeof map === "object") return Number(map[deviceId]) || 0;
+      }
+    } catch { /* ignore */ }
+    return 0;
+  }
+
+  setAppliedSnapshot(deviceId: string, timestamp: number) {
+    try {
+      const raw = Zotero.Prefs.get(StateManager.APPLIED_SNAPSHOTS_PREF) as string;
+      const map = raw ? (JSON.parse(raw) || {}) : {};
+      map[deviceId] = Math.max(Number(map[deviceId]) || 0, timestamp);
+      Zotero.Prefs.set(StateManager.APPLIED_SNAPSHOTS_PREF, JSON.stringify(map));
+    } catch { /* ignore */ }
   }
 
   /** Increment this device's counter in the vector clock and return a copy */
   incrementClock(): VectorClock {
     this.vectorClock[this.deviceId] =
       (this.vectorClock[this.deviceId] || 0) + 1;
+    this.persistClock();
     return { ...this.vectorClock };
   }
 
@@ -55,6 +109,7 @@ export class StateManager {
   /** Reset the vector clock to zero (force full re-pull on next sync) */
   resetClock() {
     this.vectorClock = { [this.deviceId]: 0 };
+    this.persistClock();
   }
 
   /** Merge a remote vector clock into ours (take max per device) */
@@ -65,6 +120,7 @@ export class StateManager {
         counter,
       );
     }
+    this.persistClock();
   }
 
   /**

@@ -28,6 +28,7 @@ export class WebDAVProvider implements CloudProvider {
     // Clean up any mangled URLs from previous bugs
     savedUrl = savedUrl.replace(/^https?:\/\/(https?:)/i, "$1");
     savedUrl = savedUrl.replace(/^(https?):\/([^/])/i, "$1://$2");
+    savedUrl = savedUrl.replace(/\/+$/, ""); // strip trailing slash → avoid //ZotCloud
     this.baseUrl = savedUrl;
     this.username =
       (Zotero.Prefs.get("extensions.zotcloud.webdav.username") as string) || "";
@@ -136,7 +137,7 @@ export class WebDAVProvider implements CloudProvider {
     return {
       name: remotePath.split("/").pop() || "",
       path: remotePath,
-      size: typeof data === "string" ? data.length : data.byteLength,
+      size: body.byteLength, // actual bytes written (UTF-8), not UTF-16 length
       lastModified: new Date().toISOString(),
       isDirectory: false,
       etag: xhr.getResponseHeader("ETag") || undefined,
@@ -341,9 +342,36 @@ export class WebDAVProvider implements CloudProvider {
 
   // --- HTTP helpers ---
 
+  private static B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  /** Build an "Authorization: Basic" header without relying on btoa (UTF-8 safe). */
+  private basicAuthHeader(): string {
+    const bytes = new TextEncoder().encode(`${this.username}:${this.password}`);
+    const t = WebDAVProvider.B64;
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 3) {
+      const b0 = bytes[i];
+      const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+      const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      out += t[b0 >> 2];
+      out += t[((b0 & 3) << 4) | (b1 >> 4)];
+      out += i + 1 < bytes.length ? t[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+      out += i + 2 < bytes.length ? t[b2 & 63] : "=";
+    }
+    return "Basic " + out;
+  }
+
   private resolvePath(remotePath: string): string {
     const cleanPath = remotePath.startsWith("/") ? remotePath : "/" + remotePath;
-    return this.baseUrl + cleanPath;
+    // Percent-encode each path segment. Without this, new URL() in rawRequest
+    // treats "#" as a fragment delimiter (dropping everything after it) and a
+    // stray "%" as a malformed escape — so titles like "Model #1" or "100%"
+    // collapsed onto the same request URI and overwrote each other.
+    const encoded = cleanPath
+      .split("/")
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join("/");
+    return this.baseUrl + encoded;
   }
 
   /** Compute MD5 hex digest using Gecko nsICryptoHash */
@@ -418,22 +446,21 @@ export class WebDAVProvider implements CloudProvider {
     extraHeaders?: Record<string, string>,
     responseType?: XMLHttpRequestResponseType,
   ): Promise<XMLHttpRequest> {
-    // Embed credentials in URL for Gecko auth negotiation
-    let authUrl: string;
-    try {
-      const parsed = new URL(url);
-      parsed.username = this.username;
-      parsed.password = this.password;
-      authUrl = parsed.toString();
-    } catch {
-      authUrl = url.replace("://", `://${encodeURIComponent(this.username)}:${encodeURIComponent(this.password)}@`);
-    }
+    // Send credentials in an Authorization: Basic header, NOT embedded in the
+    // URL. URL-embedded credentials get written verbatim — password included —
+    // into Zotero's own HTTP debug log (http://user:pass@host…). A header keeps
+    // the password out of the logs. (This does not add wire encryption; see the
+    // http:// note below — use https or a VPN/Tailscale tunnel for that.)
+    const headers: Record<string, string> = {
+      ...(extraHeaders || {}),
+      Authorization: this.basicAuthHeader(),
+    };
 
-    log(`${method} ${url} (auth via URL credentials)`);
+    log(`${method} ${url}`);
 
     try {
-      const response = await Zotero.HTTP.request(method, authUrl, {
-        headers: extraHeaders || {},
+      const response = await Zotero.HTTP.request(method, url, {
+        headers,
         body: body || undefined,
         responseType: responseType || "text",
         timeout: 30000,
@@ -597,23 +624,25 @@ export class WebDAVProvider implements CloudProvider {
     const responses = doc.getElementsByTagNameNS("DAV:", "response");
     const results: FileMetadata[] = [];
 
-    // Normalize base path for comparison
-    const normalizedBase = this.resolvePath(basePath).replace(/\/+$/, "");
+    // hrefs come back percent-encoded; compare against the encoded base path,
+    // then decode ONLY the final name. (Decoding the whole href up front and
+    // re-parsing it with new URL() double-encodes names with spaces, and an
+    // unguarded decode throws on a stray "%", aborting the whole listing.)
+    const normalizedBaseEnc = this.resolvePath(basePath).replace(/\/+$/, "");
+    let baseUrlPathEnc = normalizedBaseEnc;
+    try { baseUrlPathEnc = new URL(normalizedBaseEnc).pathname.replace(/\/+$/, ""); } catch { /* keep */ }
 
     for (let i = 0; i < responses.length; i++) {
       const response = responses[i];
-      const href = decodeURIComponent(
-        response.getElementsByTagNameNS("DAV:", "href")[0]?.textContent || "",
-      ).replace(/\/+$/, "");
+      const rawHref = response.getElementsByTagNameNS("DAV:", "href")[0]?.textContent || "";
+      let hrefPathEnc = rawHref;
+      if (rawHref.startsWith("http")) {
+        try { hrefPathEnc = new URL(rawHref).pathname; } catch { hrefPathEnc = rawHref; }
+      }
+      hrefPathEnc = hrefPathEnc.replace(/\/+$/, "");
 
       // Skip the directory itself
-      if (href === normalizedBase || href === normalizedBase + "/") continue;
-      // Also skip by checking if it matches the base URL path
-      const baseUrlPath = new URL(normalizedBase).pathname.replace(/\/+$/, "");
-      const hrefPath = href.startsWith("http")
-        ? new URL(href).pathname.replace(/\/+$/, "")
-        : href.replace(/\/+$/, "");
-      if (hrefPath === baseUrlPath) continue;
+      if (hrefPathEnc === baseUrlPathEnc) continue;
 
       const isDirectory =
         response.getElementsByTagNameNS("DAV:", "collection").length > 0;
@@ -630,7 +659,8 @@ export class WebDAVProvider implements CloudProvider {
         response.getElementsByTagNameNS("DAV:", "getetag")[0]?.textContent ||
         undefined;
 
-      const name = hrefPath.split("/").filter(Boolean).pop() || "";
+      let name = hrefPathEnc.split("/").filter(Boolean).pop() || "";
+      try { name = decodeURIComponent(name); } catch { /* keep encoded name */ }
 
       results.push({
         name,

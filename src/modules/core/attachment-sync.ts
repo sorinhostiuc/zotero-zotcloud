@@ -29,8 +29,11 @@ interface AttachmentManifest {
       extension: string;
       /** Human-readable cloud path (relative to cloudFolder) when file organization is enabled */
       cloudPath?: string;
-      /** Zotero item key that owns this attachment */
+      /** Zotero item key that owns this attachment (primary; kept for back-compat) */
       itemKey?: string;
+      /** ALL item keys that reference this file. The cloud file is only deleted
+       *  once every owner is gone — deleting one owner must not orphan the rest. */
+      itemKeys?: string[];
       /** Parent item key (the reference this attachment belongs to) */
       parentItemKey?: string;
     }
@@ -97,9 +100,48 @@ export class AttachmentSync {
     try {
       const data = await this.provider.download(manifestPath);
       this.manifest = JSON.parse(new TextDecoder().decode(data));
-    } catch {
-      this.manifest = { files: {} };
+      return;
+    } catch (err) {
+      // Only treat a genuinely-absent manifest (404 / not found) as empty. A
+      // transient/server error must NOT reset it — otherwise the next
+      // saveManifest() would overwrite the cloud copy and wipe every hash→file
+      // mapping. We key off the download error message (providers throw a
+      // "not found"/404 error on absence) rather than a second, correlated
+      // exists() request that also fails during the same outage.
+      const msg = err instanceof Error ? err.message : String(err);
+      const absent = /\bnot found\b|(^|[^0-9])404([^0-9]|$)/i.test(msg);
+      if (absent) {
+        this.manifest = { files: {} };
+      } else if (!this.manifest) {
+        // Unknown error and nothing cached → fail loudly so callers skip rather
+        // than persist an empty manifest over the real one.
+        throw err instanceof Error ? err : new Error(msg);
+      }
+      // else: keep the previously-loaded manifest.
     }
+  }
+
+  /** Merge the current hash's owners with a new owner key (deduplicated). */
+  private static addOwner(entry: { itemKey?: string; itemKeys?: string[] }, key: string): void {
+    const owners = new Set<string>(entry.itemKeys ?? (entry.itemKey ? [entry.itemKey] : []));
+    owners.add(key);
+    entry.itemKeys = Array.from(owners);
+    if (!entry.itemKey) entry.itemKey = key;
+  }
+
+  /** If a DIFFERENT hash already occupies cloudPath, disambiguate with a short hash. */
+  private disambiguateCloudPath(cloudPath: string, hash: string): string {
+    if (!this.manifest) return cloudPath;
+    const collision = Object.entries(this.manifest.files).some(
+      ([h, e]) => h !== hash && e.cloudPath === cloudPath,
+    );
+    if (!collision) return cloudPath;
+    const slash = cloudPath.lastIndexOf("/");
+    const dot = cloudPath.lastIndexOf(".");
+    const short = hash.slice(0, 8);
+    return dot > slash
+      ? `${cloudPath.slice(0, dot)}-${short}${cloudPath.slice(dot)}`
+      : `${cloudPath}-${short}`;
   }
 
   /** Save the attachment manifest to cloud */
@@ -163,29 +205,28 @@ export class AttachmentSync {
       log(`resolveCloudPath failed for ${item.key}, using hash fallback: ${err}`);
     }
 
+    // Never let two different files land on the same cloud path.
+    cloudPath = this.disambiguateCloudPath(cloudPath, hash);
+
     const existing = this.manifest!.files[hash];
     if (existing) {
-      // Hash exists — check if cloud path changed (reorganization needed)
-      if (existing.cloudPath && existing.cloudPath === cloudPath) {
-        log(`Attachment ${item.key} already in cloud (hash dedup)`);
-        return hash;
-      }
+      // Same content already uploaded — record this item as an owner too, so
+      // deleting a different owner later won't orphan this one.
+      AttachmentSync.addOwner(existing, item.key);
 
-      // Path changed — move the file on cloud
       if (existing.cloudPath && existing.cloudPath !== cloudPath) {
-        const moved = await this.moveAttachment(existing.cloudPath, cloudPath);
+        // Path changed — move the file on cloud.
+        const from = existing.cloudPath;
+        const moved = await this.moveAttachment(from, cloudPath);
         if (moved) {
           existing.cloudPath = cloudPath;
-          await this.saveManifest();
-          log(`Attachment ${item.key} reorganized: ${existing.cloudPath} → ${cloudPath}`);
+          log(`Attachment ${item.key} reorganized: ${from} → ${cloudPath}`);
         }
-        return hash;
+      } else if (!existing.cloudPath) {
+        existing.cloudPath = cloudPath; // legacy entry without a stored path
       }
-
-      // No cloudPath stored (legacy entry) — still dedup but update path
-      log(`Attachment ${item.key} already in cloud (hash dedup, updating path)`);
-      existing.cloudPath = cloudPath;
       await this.saveManifest();
+      log(`Attachment ${item.key} already in cloud (hash dedup)`);
       return hash;
     }
 
@@ -211,6 +252,7 @@ export class AttachmentSync {
         extension: ext,
         cloudPath,
         itemKey: item.key,
+        itemKeys: [item.key],
         parentItemKey: item.parentKey || undefined,
       };
       await this.saveManifest();
@@ -250,12 +292,15 @@ export class AttachmentSync {
     if (localPath) {
       const exists = await IOUtils.exists(localPath);
       if (exists) {
-        // Verify hash matches
         const localHash = await computeFileHash(localPath);
         if (localHash === hash) {
           log(`Attachment ${item.key} already exists locally with matching hash`);
           return true;
         }
+        // Local file diverged from cloud (e.g. annotated locally). Do NOT
+        // overwrite/repoint it — that silently discards local changes.
+        log(`Attachment ${item.key} differs locally (local ${localHash.slice(0, 8)} vs cloud ${hash.slice(0, 8)}); keeping local copy`);
+        return false;
       }
     }
 
@@ -281,6 +326,21 @@ export class AttachmentSync {
 
       const targetPath = PathUtils.join(storageDir, entry.originalName);
       await IOUtils.write(targetPath, new Uint8Array(data));
+
+      // Integrity check: what we wrote MUST match the requested hash. A cloud
+      // path collision could otherwise hand this item a different item's file.
+      try {
+        const gotHash = await computeFileHash(targetPath);
+        if (gotHash !== hash) {
+          try { await IOUtils.remove(targetPath); } catch { /* ignore */ }
+          logError(
+            `Attachment ${item.key} hash mismatch (got ${gotHash.slice(0, 8)}, want ${hash.slice(0, 8)}) — discarded`,
+            new Error("attachment hash mismatch"),
+          );
+          hideProgress();
+          return false;
+        }
+      } catch { /* hashing failed — keep the file (best effort) */ }
 
       // Update item's attachment path if needed
       if (item.attachmentLinkMode !== Zotero.Attachments.LINK_MODE_LINKED_URL) {
@@ -340,13 +400,18 @@ export class AttachmentSync {
     if (!this.manifest) await this.loadManifest();
 
     let completed = 0;
+    let failed = 0;
     for (const { item, hash } of attachmentEvents) {
-      await this.downloadAttachment(item, hash);
+      const ok = await this.downloadAttachment(item, hash);
+      if (!ok) failed++;
       completed++;
       showProgress(
         `Downloading attachments (${completed}/${attachmentEvents.length})`,
         Math.round((completed / attachmentEvents.length) * 100),
       );
+    }
+    if (failed > 0) {
+      log(`downloadMissing: ${failed}/${attachmentEvents.length} attachment(s) failed or were skipped`);
     }
   }
 
@@ -362,16 +427,28 @@ export class AttachmentSync {
     if (!this.manifest) return 0;
 
     let deletedCount = 0;
-    const hashesToRemove: string[] = [];
+    let changed = false;
 
     for (const [hash, entry] of Object.entries(this.manifest.files)) {
-      if (entry.itemKey !== itemKey) continue;
+      const owners = new Set<string>(entry.itemKeys ?? (entry.itemKey ? [entry.itemKey] : []));
+      if (!owners.has(itemKey)) continue;
 
-      // Determine the cloud path to delete
+      owners.delete(itemKey);
+      changed = true;
+
+      if (owners.size > 0) {
+        // Other items still reference this exact file — keep it, just drop this
+        // owner. Deleting the shared file would break the remaining owners.
+        entry.itemKeys = Array.from(owners);
+        if (entry.itemKey === itemKey) entry.itemKey = entry.itemKeys[0];
+        log(`Attachment ${hash.slice(0, 8)}... still has ${owners.size} owner(s); keeping cloud file`);
+        continue;
+      }
+
+      // Last owner removed — delete the cloud file and drop the manifest entry.
       const remotePath = entry.cloudPath
         ? `${this.cloudFolder}/${entry.cloudPath}`
         : `${this.cloudFolder}/attachments/${hash}${entry.extension}`;
-
       try {
         await this.provider.delete(remotePath);
         log(`Deleted cloud attachment for item ${itemKey}: ${remotePath}`);
@@ -379,15 +456,10 @@ export class AttachmentSync {
       } catch (err) {
         logError(`Failed to delete cloud attachment ${remotePath}`, err);
       }
-
-      hashesToRemove.push(hash);
+      delete this.manifest.files[hash];
     }
 
-    // Remove entries from manifest
-    if (hashesToRemove.length > 0) {
-      for (const hash of hashesToRemove) {
-        delete this.manifest.files[hash];
-      }
+    if (changed) {
       await this.saveManifest();
     }
 
