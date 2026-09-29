@@ -726,6 +726,45 @@ export class SyncEngine {
    * Downloads snapshot and applies all items from cloud. Does NOT delete local items
    * that aren't on cloud — only adds/updates from cloud.
    */
+  /**
+   * Erase attachment items that are missing their itemAttachments row. Such
+   * "bare" attachments were created by an older build that didn't serialize
+   * linkMode, and Zotero can't repair them in place: its save only INSERTs the
+   * itemAttachments row when the item is NEW — an existing bare item silently
+   * UPDATEs zero rows. Erasing them lets a subsequent pull recreate them fresh
+   * (which also re-downloads their files). Returns the number erased.
+   */
+  async eraseBrokenAttachments(): Promise<number> {
+    const libraryID = Zotero.Libraries.userLibraryID;
+    let rows: Array<{ itemID: number }> = [];
+    try {
+      rows = await Zotero.DB.queryAsync(
+        "SELECT i.itemID AS itemID FROM items i " +
+          "JOIN itemTypes it ON it.itemTypeID = i.itemTypeID " +
+          "LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID " +
+          "WHERE i.libraryID = ? AND it.typeName = 'attachment' AND ia.itemID IS NULL",
+        libraryID,
+      );
+    } catch (err) {
+      logError("eraseBrokenAttachments: query failed", err);
+      return 0;
+    }
+    let erased = 0;
+    for (const row of rows) {
+      try {
+        const item = Zotero.Items.get(row.itemID);
+        if (item) {
+          await item.eraseTx({ skipNotifier: true });
+          erased++;
+        }
+      } catch (err) {
+        logError(`eraseBrokenAttachments: erase failed for item ${row.itemID}`, err);
+      }
+    }
+    if (erased > 0) log(`Erased ${erased} broken (row-less) attachment item(s)`);
+    return erased;
+  }
+
   async pullFromCloud(): Promise<string> {
     if (this.connections.length === 0 && !this.provider) {
       throw new Error("No cloud provider connected. Connect a provider in Settings first.");
@@ -1378,6 +1417,85 @@ export class SyncEngine {
   }
 
   /** Serialize a Zotero item into ChangeEventData */
+  /**
+   * Convert a ChangeEvent payload into a Zotero API-JSON object suitable for
+   * Item.fromJSON(). The inverse of serializeItem(). Collection membership is
+   * applied separately after save (collections must already exist locally), so
+   * it is intentionally omitted here.
+   */
+  private eventDataToApiJSON(event: ChangeEvent): any {
+    const d = (event.data || {}) as any;
+    const obj: any = { itemType: d.fields?.itemType || "document" };
+    for (const [field, value] of Object.entries(d.fields || {})) {
+      if (field === "itemType") continue;
+      obj[field] = value;
+    }
+    if (d.creators?.length) {
+      obj.creators = d.creators.map((c: any) => ({
+        creatorType: c.creatorType,
+        firstName: c.firstName || "",
+        lastName: c.lastName || "",
+      }));
+    }
+    if (d.tags?.length) obj.tags = d.tags;
+    if (d.parentKey) obj.parentItem = d.parentKey;
+    if (d.noteContent !== undefined) obj.note = d.noteContent;
+
+    // Attachments need linkMode/filename/contentType in the JSON or fromJSON
+    // builds a bare item with no itemAttachments row (a broken attachment whose
+    // file, even when downloaded, never links). Snapshots from older builds only
+    // carry attachmentPath, so reconstruct the rest: a stored file → imported_file
+    // with the path's basename as filename; otherwise a bare URL → linked_url.
+    if (obj.itemType === "attachment") {
+      const basename = (p?: string) =>
+        p ? p.split(/[\\/]/).filter(Boolean).pop() : undefined;
+      const filename = d.filename || basename(d.attachmentPath);
+      if (d.linkMode) {
+        obj.linkMode = d.linkMode;
+        if (filename) obj.filename = filename;
+        obj.contentType = d.contentType || (filename ? this.guessContentType(filename) : undefined);
+      } else if (filename) {
+        obj.linkMode = "imported_file";
+        obj.filename = filename;
+        obj.contentType = d.contentType || this.guessContentType(filename);
+      } else if (obj.url) {
+        obj.linkMode = "linked_url";
+      }
+      if (obj.contentType === undefined) delete obj.contentType;
+    }
+    return obj;
+  }
+
+  /** Best-effort MIME type from a file extension, for rebuilding attachments
+   * whose snapshot lacks an explicit contentType. */
+  private guessContentType(filename: string): string {
+    const ext = (filename.split(".").pop() || "").toLowerCase();
+    const map: Record<string, string> = {
+      pdf: "application/pdf",
+      html: "text/html",
+      htm: "text/html",
+      txt: "text/plain",
+      rtf: "application/rtf",
+      doc: "application/msword",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ppt: "application/vnd.ms-powerpoint",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      xls: "application/vnd.ms-excel",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      epub: "application/epub+zip",
+      djvu: "image/vnd.djvu",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      tiff: "image/tiff",
+      csv: "text/csv",
+      xml: "application/xml",
+      json: "application/json",
+    };
+    return map[ext] || "application/octet-stream";
+  }
+
   private async serializeItem(item: any): Promise<ChangeEvent["data"]> {
     const data: ChangeEvent["data"] = {
       fields: {},
@@ -1420,6 +1538,17 @@ export class SyncEngine {
     }
 
     if (item.isAttachment()) {
+      // Capture the attachment metadata needed to rebuild the itemAttachments
+      // row on the other side (link mode, MIME type, stored file name).
+      try {
+        data.linkMode = Zotero.Attachments.linkModeToName(item.attachmentLinkMode);
+      } catch { /* not a linkable attachment */ }
+      if (item.attachmentContentType) data.contentType = item.attachmentContentType;
+      try {
+        const fn = item.attachmentFilename;
+        if (fn) data.filename = fn;
+      } catch { /* linked_url has no filename */ }
+
       try {
         const path = await item.getFilePathAsync();
         if (path) {
@@ -1720,57 +1849,30 @@ export class SyncEngine {
         }
 
         if (!item) {
-          // Construct WITH the type — a typeless `new Zotero.Item()` cannot be
-          // saved, and setType() on an already-constructed item is unreliable
-          // across Zotero versions. This is the create path that was throwing
-          // for every incoming item.
-          const newTypeID = event.data.fields?.itemType
-            ? Zotero.ItemTypes.getID(event.data.fields.itemType)
-            : false;
-          item = new Zotero.Item(newTypeID || "document");
+          // Create an item exactly the way Zotero's own sync does
+          // (resource://zotero/xpcom/sync/syncLocal.js): construct typeless, set
+          // libraryID + key, then loadPrimaryData() to initialize the object's
+          // "loaded" state. Setting the key marks the object _identified; WITHOUT
+          // loadPrimaryData the subsequent setType/setField/setCreators throw
+          // UnloadedDataException — which is exactly why a pull created 0 of the
+          // ~20k incoming items. WITH it, the object is treated as a fully-loaded
+          // (empty) new item and fromJSON below populates it cleanly.
+          item = new Zotero.Item();
           item.libraryID = event.libraryID;
           item.key = event.entityKey;
-        } else if (event.data.fields?.itemType) {
-          const typeID = Zotero.ItemTypes.getID(event.data.fields.itemType);
-          if (typeID) item.setType(typeID);
+          await item.loadPrimaryData();
         }
 
-        for (const [field, value] of Object.entries(
-          event.data.fields || {},
-        )) {
-          if (field === "itemType") continue;
-          try {
-            item.setField(field, value);
-          } catch {
-            // Skip invalid fields silently
-          }
-        }
+        // Apply the payload through Zotero's own importer. fromJSON is what the
+        // built-in sync and translators use: it sets itemType, fields, creators,
+        // tags, note content and parent robustly (non-strict — it coerces unknown
+        // creator types and skips unknown fields instead of throwing). This
+        // replaces the hand-rolled setType/setField/setCreators sequence, which
+        // hit the key-vs-data load-ordering trap and aborted before saveTx.
+        item.fromJSON(this.eventDataToApiJSON(event));
 
-        if (event.data.creators?.length) {
-          item.setCreators(
-            event.data.creators.map((c) => ({
-              firstName: c.firstName,
-              lastName: c.lastName,
-              creatorTypeID: Zotero.CreatorTypes.getID(c.creatorType),
-            })),
-          );
-        }
-
-        if (event.data.tags) {
-          item.setTags(event.data.tags);
-        }
-
-        // Parent key for child notes, annotations, attachments
-        if (event.data.parentKey) {
-          item.parentKey = event.data.parentKey;
-        }
-
-        // Note content
-        if (event.data.noteContent !== undefined) {
-          try { item.setNote(event.data.noteContent); } catch { /* skip */ }
-        }
-
-        // Annotation data
+        // Annotation payload is not carried as top-level JSON fields, so apply it
+        // after fromJSON (the item is loaded by now, so these setters are safe).
         if (event.data.annotationData) {
           const ann = event.data.annotationData;
           try {
@@ -1845,6 +1947,12 @@ export class SyncEngine {
           collection = new Zotero.Collection();
           collection.libraryID = event.libraryID;
           collection.key = event.entityKey;
+          // Same load-ordering trap as items: setting the key marks the object
+          // _identified, after which the name setter throws UnloadedDataException.
+          // loadPrimaryData() initializes the new key's load state (matches
+          // Zotero's own sync). Without it, every incoming collection failed —
+          // which is why a recovered library came back with 0 collections.
+          await collection.loadPrimaryData();
         }
 
         if (event.data.fields?.name) {

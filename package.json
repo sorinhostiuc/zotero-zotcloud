@@ -1,7 +1,7 @@
 {
   "name": "zotero-zotcloud",
   "type": "module",
-  "version": "0.1.4",
+  "version": "0.1.9",
   "description": "Sync your Zotero library to cloud storage providers (Google Drive, Dropbox, pCloud, WebDAV)",
   "config": {
     "addonName": "ZotCloud",

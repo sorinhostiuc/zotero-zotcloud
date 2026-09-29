@@ -87,6 +87,16 @@ export class Snapshot {
       }
 
       if (item.isAttachment()) {
+        // Capture link mode / MIME / filename so the itemAttachments row can be
+        // rebuilt on restore (without these the attachment comes back broken).
+        try {
+          data.linkMode = Zotero.Attachments.linkModeToName(item.attachmentLinkMode);
+        } catch { /* not a linkable attachment */ }
+        if (item.attachmentContentType) data.contentType = item.attachmentContentType;
+        try {
+          const fn = item.attachmentFilename;
+          if (fn) data.filename = fn;
+        } catch { /* linked_url has no filename */ }
         try {
           const path = await item.getFilePathAsync();
           if (path) data.attachmentPath = path;
@@ -220,6 +230,11 @@ export class Snapshot {
             item = new Zotero.Item();
             item.libraryID = libraryID;
             item.key = event.entityKey;
+            // Initialize load state for the new key (matches Zotero's own sync).
+            // Without this, setType/setField/setCreators below throw
+            // UnloadedDataException because setting the key marks the object
+            // _identified while its data types are still flagged unloaded.
+            await item.loadPrimaryData();
           }
           if (event.data.fields?.itemType) {
             const typeID = Zotero.ItemTypes.getID(event.data.fields.itemType);
@@ -304,6 +319,7 @@ export class Snapshot {
             item = new Zotero.Item();
             item.libraryID = libraryID;
             item.key = event.entityKey;
+            await item.loadPrimaryData();
           }
           if (event.data.fields?.itemType) {
             const typeID = Zotero.ItemTypes.getID(event.data.fields.itemType);

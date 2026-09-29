@@ -104,9 +104,34 @@ async function restoreProvider(engine: SyncEngine) {
   }
 
   if (restoredCount > 0) {
-    const syncOnStartup = Zotero.Prefs.get("extensions.zotcloud.syncOnStartup");
-    if (syncOnStartup) {
-      engine.scheduleSync();
+    const forcePullOnce = Zotero.Prefs.get("extensions.zotcloud.forcePullOnce");
+    if (forcePullOnce) {
+      // One-time recovery escape hatch. A forced pull applies the cloud state in
+      // dependency order (collections → parent items → child items), which
+      // restores collection membership that the add-only snapshot fill on a
+      // normal sync cannot. Self-clears so it runs exactly once. Not awaited —
+      // it runs in the background so startup isn't blocked.
+      Zotero.Prefs.set("extensions.zotcloud.forcePullOnce", false);
+      log("forcePullOnce set — running a one-time forced pull from cloud");
+      // Erase any row-less attachment items first so the pull recreates them as
+      // NEW (Zotero only INSERTs the itemAttachments row for new items), then
+      // pull. Not awaited at top level — runs in the background so startup isn't
+      // blocked.
+      (async () => {
+        try {
+          const erased = await engine.eraseBrokenAttachments();
+          log(`forcePullOnce: erased ${erased} broken attachment(s) before pull`);
+          const r = await engine.pullFromCloud();
+          log(`forcePullOnce complete: ${r}`);
+        } catch (e) {
+          logError("forcePullOnce failed", e);
+        }
+      })();
+    } else {
+      const syncOnStartup = Zotero.Prefs.get("extensions.zotcloud.syncOnStartup");
+      if (syncOnStartup) {
+        engine.scheduleSync();
+      }
     }
     engine.startPeriodicSync();
     log(`Restored ${restoredCount}/${configs.length} provider(s)`);
