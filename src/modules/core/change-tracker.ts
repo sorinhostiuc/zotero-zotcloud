@@ -141,9 +141,27 @@ export class ChangeTracker {
     if (type === "collection") {
       return this.buildCollectionEvent(event, id, extraData);
     }
-    // collection-item and item-tag events modify the parent item
-    // They'll be captured via the item's modify event
+    if (type === "collection-item") {
+      return this.buildCollectionItemEvent(id, extraData);
+    }
+    // item-tag changes also fire an item "modify" event, so they're captured there.
     return null;
+  }
+
+  /**
+   * A collection-item notification fires when an item is added to / removed from
+   * a collection. Zotero does NOT also fire an item "modify" for this, so we
+   * re-serialize the affected item as a modify — its data.collections then
+   * reflects the new membership. IDs look like "<collectionID>-<itemID>".
+   */
+  private async buildCollectionItemEvent(
+    id: number | string,
+    extraData: Record<string, any>,
+  ): Promise<ChangeEvent | null> {
+    const parts = String(id).split("-");
+    const itemID = parseInt(parts[parts.length - 1], 10);
+    if (!Number.isFinite(itemID)) return null;
+    return this.buildItemEvent("modify", itemID, extraData);
   }
 
   private async buildItemEvent(
@@ -196,6 +214,27 @@ export class ChangeTracker {
         libraryID: extraData?.[id]?.libraryID || 1,
         data: {},
       };
+    }
+
+    // Moving an item to Trash fires a "trash" event, not "delete". Propagate it
+    // so other devices remove the item too; a restore (untrash) re-adds it.
+    if (event === "trash") {
+      const item = Zotero.Items.get(id);
+      if (!item || item.deleted) {
+        return {
+          id: generateUUID(),
+          deviceId: this.stateManager.deviceId,
+          timestamp: Date.now(),
+          vectorClock: this.stateManager.incrementClock(),
+          type: "delete",
+          entityType: "item",
+          entityKey: item?.key || extraData?.[id]?.key || String(id),
+          libraryID: item?.libraryID || extraData?.[id]?.libraryID || 1,
+          data: {},
+        };
+      }
+      // Restored from Trash → re-add/modify.
+      return this.buildItemEvent("modify", id, extraData);
     }
 
     return null;

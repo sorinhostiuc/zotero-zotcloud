@@ -28,6 +28,7 @@ export class WebDAVProvider implements CloudProvider {
     // Clean up any mangled URLs from previous bugs
     savedUrl = savedUrl.replace(/^https?:\/\/(https?:)/i, "$1");
     savedUrl = savedUrl.replace(/^(https?):\/([^/])/i, "$1://$2");
+    savedUrl = savedUrl.replace(/\/+$/, ""); // strip trailing slash → avoid //ZotCloud
     this.baseUrl = savedUrl;
     this.username =
       (Zotero.Prefs.get("extensions.zotcloud.webdav.username") as string) || "";
@@ -136,7 +137,7 @@ export class WebDAVProvider implements CloudProvider {
     return {
       name: remotePath.split("/").pop() || "",
       path: remotePath,
-      size: typeof data === "string" ? data.length : data.byteLength,
+      size: body.byteLength, // actual bytes written (UTF-8), not UTF-16 length
       lastModified: new Date().toISOString(),
       isDirectory: false,
       etag: xhr.getResponseHeader("ETag") || undefined,
@@ -343,7 +344,15 @@ export class WebDAVProvider implements CloudProvider {
 
   private resolvePath(remotePath: string): string {
     const cleanPath = remotePath.startsWith("/") ? remotePath : "/" + remotePath;
-    return this.baseUrl + cleanPath;
+    // Percent-encode each path segment. Without this, new URL() in rawRequest
+    // treats "#" as a fragment delimiter (dropping everything after it) and a
+    // stray "%" as a malformed escape — so titles like "Model #1" or "100%"
+    // collapsed onto the same request URI and overwrote each other.
+    const encoded = cleanPath
+      .split("/")
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join("/");
+    return this.baseUrl + encoded;
   }
 
   /** Compute MD5 hex digest using Gecko nsICryptoHash */
@@ -597,23 +606,25 @@ export class WebDAVProvider implements CloudProvider {
     const responses = doc.getElementsByTagNameNS("DAV:", "response");
     const results: FileMetadata[] = [];
 
-    // Normalize base path for comparison
-    const normalizedBase = this.resolvePath(basePath).replace(/\/+$/, "");
+    // hrefs come back percent-encoded; compare against the encoded base path,
+    // then decode ONLY the final name. (Decoding the whole href up front and
+    // re-parsing it with new URL() double-encodes names with spaces, and an
+    // unguarded decode throws on a stray "%", aborting the whole listing.)
+    const normalizedBaseEnc = this.resolvePath(basePath).replace(/\/+$/, "");
+    let baseUrlPathEnc = normalizedBaseEnc;
+    try { baseUrlPathEnc = new URL(normalizedBaseEnc).pathname.replace(/\/+$/, ""); } catch { /* keep */ }
 
     for (let i = 0; i < responses.length; i++) {
       const response = responses[i];
-      const href = decodeURIComponent(
-        response.getElementsByTagNameNS("DAV:", "href")[0]?.textContent || "",
-      ).replace(/\/+$/, "");
+      const rawHref = response.getElementsByTagNameNS("DAV:", "href")[0]?.textContent || "";
+      let hrefPathEnc = rawHref;
+      if (rawHref.startsWith("http")) {
+        try { hrefPathEnc = new URL(rawHref).pathname; } catch { hrefPathEnc = rawHref; }
+      }
+      hrefPathEnc = hrefPathEnc.replace(/\/+$/, "");
 
       // Skip the directory itself
-      if (href === normalizedBase || href === normalizedBase + "/") continue;
-      // Also skip by checking if it matches the base URL path
-      const baseUrlPath = new URL(normalizedBase).pathname.replace(/\/+$/, "");
-      const hrefPath = href.startsWith("http")
-        ? new URL(href).pathname.replace(/\/+$/, "")
-        : href.replace(/\/+$/, "");
-      if (hrefPath === baseUrlPath) continue;
+      if (hrefPathEnc === baseUrlPathEnc) continue;
 
       const isDirectory =
         response.getElementsByTagNameNS("DAV:", "collection").length > 0;
@@ -630,7 +641,8 @@ export class WebDAVProvider implements CloudProvider {
         response.getElementsByTagNameNS("DAV:", "getetag")[0]?.textContent ||
         undefined;
 
-      const name = hrefPath.split("/").filter(Boolean).pop() || "";
+      let name = hrefPathEnc.split("/").filter(Boolean).pop() || "";
+      try { name = decodeURIComponent(name); } catch { /* keep encoded name */ }
 
       results.push({
         name,

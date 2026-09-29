@@ -202,6 +202,13 @@ export class Snapshot {
           if (event.data.fields?.name) {
             collection.name = event.data.fields.name;
           }
+          const parentKey = (event.data.fields as any)?.parentKey;
+          try {
+            if (parentKey) {
+              const parent = Zotero.Collections.getByLibraryAndKey(libraryID, parentKey);
+              if (parent) collection.parentID = parent.id;
+            }
+          } catch { /* parent may come later */ }
           await collection.saveTx({ skipNotifier: true });
           applied++;
         } else if (event.entityType === "item") {
@@ -267,6 +274,16 @@ export class Snapshot {
               if (ann.text) item.annotationText = ann.text;
               if (ann.sortIndex) item.annotationSortIndex = ann.sortIndex;
             } catch { /* some annotation props may not be settable */ }
+          }
+
+          // Collection membership (top-level items only).
+          if (event.data.collections && !event.data.parentKey) {
+            const collIDs: number[] = [];
+            for (const key of event.data.collections) {
+              const coll = Zotero.Collections.getByLibraryAndKey(libraryID, key);
+              if (coll) collIDs.push(coll.id);
+            }
+            try { item.setCollections(collIDs); } catch { /* skip */ }
           }
 
           await item.saveTx({ skipNotifier: true });

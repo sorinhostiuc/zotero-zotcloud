@@ -112,9 +112,14 @@ export class ChangeLog {
   static async getSince(timestamp: number): Promise<ChangeEvent[]> {
     await this.init();
 
+    // "> t" alone would skip an event that shares the last-synced millisecond
+    // but wasn't in the previous batch. Also include same-ms events still marked
+    // unsynced, without re-sending ones already marked synced.
     const rows = await Zotero.DB.queryAsync(
-      `SELECT * FROM ${this.TABLE} WHERE timestamp > ? ORDER BY timestamp ASC`,
-      [timestamp],
+      `SELECT * FROM ${this.TABLE}
+       WHERE timestamp > ? OR (timestamp = ? AND synced = 0)
+       ORDER BY timestamp ASC`,
+      [timestamp, timestamp],
     );
     return this.rowsToEvents(rows);
   }

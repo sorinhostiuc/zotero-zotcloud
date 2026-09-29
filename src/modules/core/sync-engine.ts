@@ -1541,6 +1541,10 @@ export class SyncEngine {
       );
     }
 
+    // Winning remote events are collected here and applied in dependency order
+    // after all changelogs are read (not inline in file order).
+    const toApply: ChangeEvent[] = [];
+
     // Process each remote device's changelog
     for (const [remoteDeviceId, counter] of Object.entries(
       manifest.vectorClock,
@@ -1598,17 +1602,13 @@ export class SyncEngine {
                 }
 
                 if (winner === remoteEvent) {
-                  await this.applyRemoteEvent(remoteEvent);
+                  toApply.push(remoteEvent);
                 }
               } else {
-                const merged = this.conflictResolver.mergeEvents(
-                  localEvent,
-                  remoteEvent,
-                );
-                await this.applyRemoteEvent(merged);
+                toApply.push(this.conflictResolver.mergeEvents(localEvent, remoteEvent));
               }
             } else {
-              await this.applyRemoteEvent(remoteEvent);
+              toApply.push(remoteEvent);
             }
           }
         } catch (err) {
@@ -1616,6 +1616,23 @@ export class SyncEngine {
         }
       }
     }
+
+    // Collapse to the LAST event per entity (changelogs are time-ordered, so the
+    // newest wins — this makes an add+delete or delete+re-add in the same round
+    // resolve correctly regardless of the type-ordered apply below).
+    const latest = new Map<string, ChangeEvent>();
+    for (const e of toApply) latest.set(`${e.entityType}:${e.entityKey}`, e);
+    const finalEvents = Array.from(latest.values());
+
+    // Apply in dependency order: collections → parent items → child items, so a
+    // child never lands before its parent exists.
+    const applyMatching = async (match: (e: ChangeEvent) => boolean) => {
+      for (const e of finalEvents.filter(match)) await this.applyRemoteEvent(e);
+    };
+    await applyMatching((e) => e.type === "delete");
+    await applyMatching((e) => e.type !== "delete" && e.entityType === "collection");
+    await applyMatching((e) => e.type !== "delete" && e.entityType === "item" && !e.data.parentKey);
+    await applyMatching((e) => e.type !== "delete" && e.entityType === "item" && !!e.data.parentKey);
 
     this.stateManager.mergeClock(manifest.vectorClock);
   }
@@ -1712,6 +1729,16 @@ export class SyncEngine {
           } catch { /* some annotation props may not be settable */ }
         }
 
+        // Collection membership (top-level items only; children inherit parent).
+        if (event.data.collections && !event.data.parentKey) {
+          const collIDs: number[] = [];
+          for (const key of event.data.collections) {
+            const coll = Zotero.Collections.getByLibraryAndKey(event.libraryID, key);
+            if (coll) collIDs.push(coll.id);
+          }
+          try { item.setCollections(collIDs); } catch { /* skip */ }
+        }
+
         await item.saveTx({ skipNotifier: true });
 
         if (event.data.attachmentHash && this.attachmentSync && item.isAttachment()) {
@@ -1762,6 +1789,17 @@ export class SyncEngine {
         if (event.data.fields?.name) {
           collection.name = event.data.fields.name;
         }
+
+        // Nested collection hierarchy — set/clear the parent.
+        const parentKey = (event.data.fields as any)?.parentKey;
+        try {
+          if (parentKey) {
+            const parent = Zotero.Collections.getByLibraryAndKey(event.libraryID, parentKey);
+            if (parent) collection.parentID = parent.id;
+          } else if (parentKey === null && (collection as any).parentID) {
+            (collection as any).parentID = false;
+          }
+        } catch { /* parent may not exist yet */ }
 
         await collection.saveTx({ skipNotifier: true });
         break;
