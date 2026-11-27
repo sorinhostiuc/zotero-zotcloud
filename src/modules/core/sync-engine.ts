@@ -5,7 +5,7 @@ import { ChangeLog } from "./change-log";
 import { ConflictResolver } from "./conflict-resolver";
 import { QueueManager } from "./queue-manager";
 import { AttachmentSync } from "./attachment-sync";
-import { Snapshot } from "./snapshot";
+import { Snapshot, activeLibraryItems } from "./snapshot";
 import { orderDependencies } from "./event-order";
 import { CloudProvider } from "../providers/provider";
 import { Encryption } from "../crypto/encryption";
@@ -1237,73 +1237,9 @@ export class SyncEngine {
       `${cloudFolder}/changelog/${this.stateManager.deviceId}`,
     );
 
-    // Restore EACH device's latest snapshot (oldest→newest so the newest copy
-    // wins on overlaps) — not just the globally-newest one, which would drop a
-    // peer's whole library.
-    let snapshotTimestamp = 0;
-    try {
-      const byDevice = await this.snapshotsByDevice(cloudFolder);
-      const perDevice = Array.from(byDevice.values()).sort((a, b) => a.timestamp - b.timestamp);
-      const libraryID = Zotero.Libraries.userLibraryID;
-      for (const snap of perDevice) {
-        try {
-          log(`Restoring from snapshot: ${snap.path} (ts=${snap.timestamp})`);
-          const snapshotData = await this.provider.download(snap.path);
-          await Snapshot.restore(snapshotData, libraryID);
-        } catch (err) {
-          logError(`Snapshot restore failed for ${snap.path}`, err);
-        }
-      }
-      if (perDevice.length > 0) {
-        // Replay changelogs after the OLDEST snapshot so anything written between
-        // one device's snapshot and another's is not skipped (replay is idempotent).
-        snapshotTimestamp = perDevice[0].timestamp;
-        log(`Restored ${perDevice.length} device snapshot(s); replaying changelogs after ${new Date(snapshotTimestamp).toISOString()}`);
-      }
-    } catch (err) {
-      logError("Snapshot restore failed, falling back to full changelog replay", err);
-    }
-
-    // Download and apply changelogs
-    for (const remoteDeviceId of Object.keys(manifest.devices)) {
-      if (remoteDeviceId === this.stateManager.deviceId) continue;
-
-      const changelogDir = `${cloudFolder}/changelog/${remoteDeviceId}`;
-      let files;
-      try {
-        files = await this.provider.list(changelogDir);
-      } catch {
-        log(`No changelogs found for device ${remoteDeviceId}`);
-        continue;
-      }
-
-      files.sort((a, b) => a.name.localeCompare(b.name));
-
-      for (const file of files) {
-        if (!file.name.endsWith(".json") || file.isDirectory) continue;
-
-        if (snapshotTimestamp > 0) {
-          const tsMatch = file.name.match(/^(\d+)/);
-          if (tsMatch) {
-            const fileTs = parseInt(tsMatch[1], 10);
-            if (fileTs <= snapshotTimestamp) continue;
-          }
-        }
-
-        try {
-          const data = await this.provider.download(file.path);
-          const events: ChangeEvent[] = JSON.parse(this.decodeBuffer(data));
-
-          log(`Applying ${events.length} events from ${file.name}`);
-          for (const event of events) {
-            await this.applyRemoteEvent(event);
-          }
-        } catch (err) {
-          logError(`Failed to process changelog ${file.path}`, err);
-          throw err;
-        }
-      }
-    }
+    // Use the same checked recovery path as incremental sync. The old separate
+    // restore path could skip collection/attachment failures during first setup.
+    await this.pull();
 
     // Download missing attachments from cloud
     if (this.attachmentSync) {
@@ -1344,7 +1280,8 @@ export class SyncEngine {
           }
         }
       } catch (err) {
-        logError("Attachment download during join failed (non-fatal)", err);
+        logError("Attachment download during join failed", err);
+        throw err;
       }
     }
 
@@ -1362,7 +1299,7 @@ export class SyncEngine {
     const syncChildNotes = Zotero.Prefs.get("extensions.zotcloud.syncChildNotes");
     const syncAnnotations = Zotero.Prefs.get("extensions.zotcloud.syncAnnotations");
 
-    const items = await Zotero.Items.getAll(libraryID);
+    const items = activeLibraryItems(await Zotero.Items.getAll(libraryID));
     for (const item of items) {
       if (item.isFeedItem) continue;
       if ((item as any).isAnnotation?.() && !syncAnnotations) continue;

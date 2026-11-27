@@ -212,3 +212,14 @@ it("retries a failed changelog download without advancing the remote clock", asy
   expect(state.getClock().peer).toBeUndefined();
   expect(state.lastSuccessfulSync).toBe(123);
 });
+
+it("first-device join uses dependency-ordered snapshot recovery", async () => {
+  const p = remote([event("child", "item", { parentKey: "parent" }), event("parent")]);
+  const { engine } = await engineFor(p);
+  engine.attachmentSync = null;
+  const applied: string[] = [];
+  vi.spyOn(engine, "applyRemoteEvent").mockImplementation(async (e: any) => { applied.push(e.entityKey); return true; });
+  vi.spyOn(engine, "updateManifest").mockResolvedValue();
+  await engine.joinExistingSync(manifest);
+  expect(applied).toEqual(["parent", "child"]);
+});

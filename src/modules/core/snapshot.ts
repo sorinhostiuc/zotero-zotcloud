@@ -21,6 +21,23 @@ export interface SnapshotMeta {
   schemaVersion: number;
 }
 
+/** Zotero may return children of trashed parents even when getAll excludes Trash. */
+export function activeLibraryItems(items: any[]): any[] {
+  const available = new Map(items.filter(i => !i.deleted && !i.isFeedItem).map(i => [i.key, i]));
+  return Array.from(available.values()).filter(item => {
+    const seen = new Set([item.key]);
+    let parentKey = item.parentKey;
+    while (parentKey) {
+      if (seen.has(parentKey)) return false;
+      seen.add(parentKey);
+      const parent = available.get(parentKey);
+      if (!parent) return false;
+      parentKey = parent.parentKey;
+    }
+    return true;
+  });
+}
+
 export class Snapshot {
   /**
    * Generate a full library snapshot as JSON.
@@ -35,7 +52,7 @@ export class Snapshot {
     const events: ChangeEvent[] = [];
 
     // Export all items
-    const items = await Zotero.Items.getAll(libraryID);
+    const items = activeLibraryItems(await Zotero.Items.getAll(libraryID));
     let itemCount = 0;
     const syncStandaloneNotes = Zotero.Prefs.get("extensions.zotcloud.syncStandaloneNotes");
     const syncChildNotes = Zotero.Prefs.get("extensions.zotcloud.syncChildNotes");
