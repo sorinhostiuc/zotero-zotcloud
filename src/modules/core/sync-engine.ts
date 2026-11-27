@@ -6,6 +6,7 @@ import { ConflictResolver } from "./conflict-resolver";
 import { QueueManager } from "./queue-manager";
 import { AttachmentSync } from "./attachment-sync";
 import { Snapshot } from "./snapshot";
+import { orderDependencies } from "./event-order";
 import { CloudProvider } from "../providers/provider";
 import { Encryption } from "../crypto/encryption";
 import { debounce } from "../utils/debounce";
@@ -292,6 +293,7 @@ export class SyncEngine {
 
     this._isSyncing = true;
     this.stateManager.status = "syncing";
+    this.resetApplyErrorLog();
     log("Sync started");
 
     try {
@@ -304,6 +306,7 @@ export class SyncEngine {
         log(`Persisted ${pendingEvents.length} events to change log`);
       }
 
+      const failures: string[] = [];
       if (this.connections.length > 0) {
         // Multi-provider: sync each connection
         for (const conn of this.connections) {
@@ -317,23 +320,24 @@ export class SyncEngine {
           try {
             log(`Syncing with ${conn.key}...`);
             const latestTimestamp = await this.pushSince(conn.lastSyncedTimestamp);
-            if (latestTimestamp > 0) {
-              conn.lastSyncedTimestamp = latestTimestamp;
-            }
             await this.pull();
+            if (latestTimestamp > 0) conn.lastSyncedTimestamp = latestTimestamp;
           } catch (err) {
+            failures.push(conn.key);
             logError(`Sync failed for ${conn.key}`, err);
           }
         }
 
         // Mark events as synced when ALL providers have them
-        this.markFullySyncedEvents();
+        await this.markFullySyncedEvents();
         this.saveConnectionState();
       } else {
         // Single-provider backward compat (no connections array)
         await this.pushSince(0);
         await this.pull();
       }
+
+      if (failures.length) throw new Error(`Sync incomplete for: ${failures.join(", ")}`);
 
       // Update state
       const unresolved = this.conflictResolver.getUnresolved();
@@ -348,6 +352,7 @@ export class SyncEngine {
       this.stateManager.status = "error";
       logError("Sync failed", err);
     } finally {
+      this.flushApplyErrors();
       this._isSyncing = false;
     }
   }
@@ -769,11 +774,7 @@ export class SyncEngine {
     if (this.connections.length === 0 && !this.provider) {
       throw new Error("No cloud provider connected. Connect a provider in Settings first.");
     }
-    // pullFromCloud force-resets the syncing flag — it can get stuck after an
-    // earlier sync errored in a way that bypassed its finally block.
-    if (this._isSyncing) {
-      log("Sync flag was set — forcing reset to allow pull");
-    }
+    if (this._isSyncing) throw new Error("A sync is already in progress");
 
     this._isSyncing = true;
     this.stateManager.status = "syncing";
@@ -816,23 +817,13 @@ export class SyncEngine {
         // Apply a list of ChangeEvents in dependency order (collections →
         // parent items → child items). Returns counts for reporting.
         const applyEvents = async (evts: ChangeEvent[]) => {
-          let applied = 0, failed = 0, firstErr = "";
-          const ordered = async (match: (e: ChangeEvent) => boolean) => {
-            for (const event of evts.filter(match)) {
-              try {
-                await this.applyRemoteEventForced(event);
-                applied++;
-              } catch (err) {
-                failed++;
-                if (!firstErr) firstErr = em(err);
-                logError(`Failed to apply ${event.entityType} ${event.entityKey}`, err);
-              }
-            }
-          };
-          await ordered((e) => e.entityType === "collection");
-          await ordered((e) => e.entityType === "item" && !e.data.parentKey);
-          await ordered((e) => e.entityType === "item" && !!e.data.parentKey);
-          return { applied, failed, firstErr };
+          let applied = 0, failed = 0;
+          for (const event of orderDependencies(evts)) {
+            if (await this.applyRemoteEventForced(event)) applied++;
+            else failed++;
+          }
+          if (failed) warnings.push(`${label}: ${failed} entities could not be applied`);
+          return { applied, failed, firstErr: failed ? "see apply error log" : "" };
         };
 
         let providerApplied = 0;
@@ -955,6 +946,7 @@ export class SyncEngine {
           }
         }
 
+        if (warnings.length) throw new Error(warnings.join(" | "));
         this.stateManager.mergeClock(manifest.vectorClock);
         if (conn) conn.lastSyncedTimestamp = Date.now();
       };
@@ -983,7 +975,7 @@ export class SyncEngine {
       this.stateManager.pendingChanges = 0;
 
       // Nothing applied → the pull genuinely failed; tell the caller exactly why.
-      if (totalApplied === 0) {
+      if (totalApplied === 0 || errors.length || warnings.length) {
         this.stateManager.status = "error";
         throw new Error(errors.length ? errors.join(" | ") : "nothing found on cloud to pull");
       }
@@ -1027,7 +1019,6 @@ export class SyncEngine {
    */
   private flushApplyErrors(): void {
     const errs = SyncEngine._applyErrors;
-    if (errs.length === 0) return;
     try {
       const path = PathUtils.join(Zotero.DataDirectory.dir, "zotcloud-apply-errors.log");
       IOUtils.write(path, new TextEncoder().encode(errs.join("\n") + "\n")).catch(() => {});
@@ -1309,6 +1300,7 @@ export class SyncEngine {
           }
         } catch (err) {
           logError(`Failed to process changelog ${file.path}`, err);
+          throw err;
         }
       }
     }
@@ -1678,16 +1670,11 @@ export class SyncEngine {
 
     const cloudFolder = this.getCloudFolder();
 
-    // Read remote manifest
-    let manifest: CloudManifest;
-    try {
-      const data = await this.provider.download(
-        `${cloudFolder}/manifest.json`,
-      );
-      manifest = JSON.parse(this.decodeBuffer(data));
-    } catch {
-      log("No remote manifest found, nothing to pull");
-      return;
+    // An unreadable manifest is a failed sync, not an empty library.
+    const data = await this.provider.download(`${cloudFolder}/manifest.json`);
+    const manifest: CloudManifest = JSON.parse(this.decodeBuffer(data));
+    if (!manifest?.vectorClock || typeof manifest.vectorClock !== "object") {
+      throw new Error("Invalid cloud manifest");
     }
 
     // Recover any snapshot-only data from other devices first (data that was
@@ -1725,12 +1712,7 @@ export class SyncEngine {
       if (counter <= ourCounter) continue;
 
       const changelogDir = `${cloudFolder}/changelog/${remoteDeviceId}`;
-      let files;
-      try {
-        files = await this.provider.list(changelogDir);
-      } catch {
-        continue;
-      }
+      const files = await this.provider.list(changelogDir);
 
       files.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -1782,6 +1764,7 @@ export class SyncEngine {
           }
         } catch (err) {
           logError(`Failed to process changelog ${file.path}`, err);
+          throw err;
         }
       }
     }
@@ -1795,15 +1778,16 @@ export class SyncEngine {
     for (const e of toApply) latest.set(`${e.entityType}:${e.entityKey}`, e);
     const finalEvents = Array.from(latest.values());
 
-    // Apply in dependency order: collections → parent items → child items, so a
-    // child never lands before its parent exists.
-    const applyMatching = async (match: (e: ChangeEvent) => boolean) => {
-      for (const e of finalEvents.filter(match)) await this.applyRemoteEvent(e);
-    };
-    await applyMatching((e) => e.type === "delete");
-    await applyMatching((e) => e.type !== "delete" && e.entityType === "collection");
-    await applyMatching((e) => e.type !== "delete" && e.entityType === "item" && !e.data.parentKey);
-    await applyMatching((e) => e.type !== "delete" && e.entityType === "item" && !!e.data.parentKey);
+    // Do not acknowledge the remote clock until every event has landed.
+    const ordered = [
+      ...finalEvents.filter(e => e.type === "delete"),
+      ...orderDependencies(finalEvents.filter(e => e.type !== "delete")),
+    ];
+    for (const event of ordered) {
+      if (!await this.applyRemoteEvent(event)) {
+        throw new Error(`Remote event could not be applied: ${event.entityType}:${event.entityKey}`);
+      }
+    }
 
     this.stateManager.mergeClock(manifest.vectorClock);
     this.flushApplyErrors();
@@ -2097,18 +2081,11 @@ export class SyncEngine {
    * Mark events as synced in the ChangeLog when ALL providers have them.
    * Uses the minimum lastSyncedTimestamp across all connections.
    */
-  private markFullySyncedEvents(): void {
-    if (this.connections.length === 0) return;
-
-    const minTimestamp = Math.min(
-      ...this.connections.filter(c => c.enabled).map(c => c.lastSyncedTimestamp),
-    );
-
-    if (minTimestamp > 0) {
-      ChangeLog.markSyncedBefore(minTimestamp).catch(err => {
-        logError("Failed to mark fully synced events", err);
-      });
-    }
+  private async markFullySyncedEvents(): Promise<void> {
+    const enabled = this.connections.filter(c => c.enabled);
+    if (!enabled.length) return;
+    const minTimestamp = Math.min(...enabled.map(c => c.lastSyncedTimestamp));
+    if (minTimestamp > 0) await ChangeLog.markSyncedBefore(minTimestamp);
   }
 
   // --- Utilities ---
@@ -2234,22 +2211,17 @@ export class SyncEngine {
     const result = new Map<string, { timestamp: number; path: string }>();
     if (!this.provider) return result;
 
-    let snapshotFiles: FileMetadata[];
-    try {
-      const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
-      snapshotFiles = snapshots.filter(
-        (f) => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory,
-      );
-    } catch {
-      return result;
-    }
+    const snapshots = await this.provider.list(`${cloudFolder}/snapshots`);
+    const snapshotFiles = snapshots.filter(
+      f => f.name.endsWith(".json") && !f.name.endsWith(".meta.json") && !f.isDirectory,
+    );
 
     for (const snap of snapshotFiles) {
       const tsMatch = snap.name.match(/^(\d+)/);
       if (!tsMatch) continue;
       const timestamp = parseInt(tsMatch[1], 10);
       const owner = await this.snapshotOwner(cloudFolder, snap.name);
-      if (!owner) continue;
+      if (!owner) throw new Error(`Cannot identify snapshot owner: ${snap.name}`);
       const existing = result.get(owner);
       if (!existing || timestamp > existing.timestamp) {
         result.set(owner, { timestamp, path: snap.path });
@@ -2287,11 +2259,11 @@ export class SyncEngine {
       try {
         const data = await this.provider.download(snap.path);
         const events: ChangeEvent[] = JSON.parse(this.decodeBuffer(data));
-        if (!Array.isArray(events) || events.length === 0) continue;
+        if (!Array.isArray(events)) throw new Error("Invalid snapshot payload");
 
         let added = 0;
         let failed = 0;
-        for (const event of events) {
+        for (const event of orderDependencies(events)) {
           const key = `${event.entityType}:${event.entityKey}`;
           if (deletedKeys.has(key)) continue; // don't resurrect our own deletions
           const exists = event.entityType === "collection"
@@ -2307,8 +2279,10 @@ export class SyncEngine {
           this.stateManager.setAppliedSnapshot(deviceId, snap.timestamp);
         }
         log(`Applied ${deviceId} snapshot: ${added} new entities, ${failed} failed (of ${events.length})`);
+        if (failed) throw new Error(`${failed} snapshot entities could not be applied`);
       } catch (err) {
         logError(`Failed to apply snapshot for device ${deviceId}`, err);
+        throw err;
       }
     }
   }

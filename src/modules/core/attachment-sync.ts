@@ -411,7 +411,7 @@ export class AttachmentSync {
       );
     }
     if (failed > 0) {
-      log(`downloadMissing: ${failed}/${attachmentEvents.length} attachment(s) failed or were skipped`);
+      throw new Error(`${failed}/${attachmentEvents.length} attachments could not be downloaded`);
     }
   }
 
