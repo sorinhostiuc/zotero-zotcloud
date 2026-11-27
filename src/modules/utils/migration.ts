@@ -40,9 +40,15 @@ const migrations: Migration[] = [
   },
   // v1 → v2: add previousData column
   async () => {
-    await Zotero.DB.queryAsync(`
-      ALTER TABLE zotcloudChangeLog ADD COLUMN previousData TEXT
-    `);
+    // ChangeLog.init() may already have created the table WITH previousData.
+    // A blind ALTER would then throw "duplicate column name", abort
+    // runMigrations() before the version pref advances, and re-throw on every
+    // startup — wedging all future migrations. Only add the column if missing.
+    const cols = await Zotero.DB.queryAsync(`PRAGMA table_info(zotcloudChangeLog)`);
+    const hasColumn = Array.isArray(cols) && cols.some((c: any) => c?.name === "previousData");
+    if (!hasColumn) {
+      await Zotero.DB.queryAsync(`ALTER TABLE zotcloudChangeLog ADD COLUMN previousData TEXT`);
+    }
   },
 ];
 

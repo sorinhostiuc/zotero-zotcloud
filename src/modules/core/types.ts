@@ -40,6 +40,15 @@ export interface ChangeEventData {
   relations?: Record<string, string>;
   attachmentPath?: string;
   attachmentHash?: string;
+  /** Attachment link mode as a Zotero API-JSON string ("imported_file",
+   * "imported_url", "linked_file", "linked_url"). Needed to rebuild the
+   * itemAttachments row on the receiving side — without it fromJSON creates a
+   * bare, broken attachment item. */
+  linkMode?: string;
+  /** Attachment MIME type (e.g. "application/pdf"). */
+  contentType?: string;
+  /** Stored file name for imported attachments (basename of the file). */
+  filename?: string;
   /** Parent item key (for attachment items linking to their parent reference) */
   parentKey?: string;
   /** HTML content for note items */

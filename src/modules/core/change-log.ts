@@ -112,9 +112,14 @@ export class ChangeLog {
   static async getSince(timestamp: number): Promise<ChangeEvent[]> {
     await this.init();
 
+    // "> t" alone would skip an event that shares the last-synced millisecond
+    // but wasn't in the previous batch. Also include same-ms events still marked
+    // unsynced, without re-sending ones already marked synced.
     const rows = await Zotero.DB.queryAsync(
-      `SELECT * FROM ${this.TABLE} WHERE timestamp > ? ORDER BY timestamp ASC`,
-      [timestamp],
+      `SELECT * FROM ${this.TABLE}
+       WHERE timestamp > ? OR (timestamp = ? AND synced = 0)
+       ORDER BY timestamp ASC`,
+      [timestamp, timestamp],
     );
     return this.rowsToEvents(rows);
   }
@@ -159,6 +164,17 @@ export class ChangeLog {
       `SELECT COUNT(*) as cnt FROM ${this.TABLE}`,
     );
     return rows?.[0]?.cnt || 0;
+  }
+
+  /** Keys ("entityType:entityKey") this device has a local delete for. */
+  static async deletedEntityKeys(): Promise<Set<string>> {
+    await this.init();
+    const rows = await Zotero.DB.queryAsync(
+      `SELECT entityType, entityKey FROM ${this.TABLE} WHERE type = 'delete'`,
+    );
+    const set = new Set<string>();
+    for (const r of rows || []) set.add(`${r.entityType}:${r.entityKey}`);
+    return set;
   }
 
   /** Get count of unsynced events */

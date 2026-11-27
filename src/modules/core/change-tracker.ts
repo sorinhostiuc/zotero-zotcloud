@@ -1,5 +1,6 @@
 import { ChangeEvent, ChangeEventData, Creator, Tag } from "./types";
 import { StateManager } from "./state-manager";
+import { ChangeLog } from "./change-log";
 import { generateUUID } from "../utils/uuid";
 import { log, logError } from "../utils/logger";
 
@@ -18,9 +19,15 @@ export class ChangeTracker {
   private stateManager: StateManager;
   private pendingEvents: ChangeEvent[] = [];
   private _isSyncing = false;
+  private onChange: (() => void) | null = null;
 
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
+  }
+
+  /** Register a callback fired after new local changes are captured+persisted. */
+  setOnChange(cb: () => void) {
+    this.onChange = cb;
   }
 
   /** Whether we are currently applying remote changes (skip local tracking) */
@@ -91,6 +98,7 @@ export class ChangeTracker {
     // Skip events while we're applying remote changes
     if (this._isSyncing) return;
 
+    const built: ChangeEvent[] = [];
     for (const id of ids) {
       const changeEvent = await this.buildChangeEvent(
         event,
@@ -100,9 +108,25 @@ export class ChangeTracker {
       );
       if (changeEvent) {
         this.pendingEvents.push(changeEvent);
-        this.stateManager.pendingChanges = this.pendingEvents.length;
+        built.push(changeEvent);
       }
     }
+    if (built.length === 0) return;
+    this.stateManager.pendingChanges = this.pendingEvents.length;
+
+    // Persist to the change log IMMEDIATELY. Previously events lived only in the
+    // in-memory pendingEvents array until the next syncNow drained them, so an
+    // edit followed by a quit/crash before a sync was lost entirely. Also nudge
+    // the engine to schedule a (debounced) sync instead of waiting for the
+    // 5-minute periodic timer.
+    try {
+      await ChangeLog.appendBatch(built);
+    } catch (err) {
+      logError("Failed to persist change events", err);
+    }
+    try {
+      this.onChange?.();
+    } catch { /* scheduling is best-effort */ }
   }
 
   private async buildChangeEvent(
@@ -117,9 +141,27 @@ export class ChangeTracker {
     if (type === "collection") {
       return this.buildCollectionEvent(event, id, extraData);
     }
-    // collection-item and item-tag events modify the parent item
-    // They'll be captured via the item's modify event
+    if (type === "collection-item") {
+      return this.buildCollectionItemEvent(id, extraData);
+    }
+    // item-tag changes also fire an item "modify" event, so they're captured there.
     return null;
+  }
+
+  /**
+   * A collection-item notification fires when an item is added to / removed from
+   * a collection. Zotero does NOT also fire an item "modify" for this, so we
+   * re-serialize the affected item as a modify — its data.collections then
+   * reflects the new membership. IDs look like "<collectionID>-<itemID>".
+   */
+  private async buildCollectionItemEvent(
+    id: number | string,
+    extraData: Record<string, any>,
+  ): Promise<ChangeEvent | null> {
+    const parts = String(id).split("-");
+    const itemID = parseInt(parts[parts.length - 1], 10);
+    if (!Number.isFinite(itemID)) return null;
+    return this.buildItemEvent("modify", itemID, extraData);
   }
 
   private async buildItemEvent(
@@ -172,6 +214,27 @@ export class ChangeTracker {
         libraryID: extraData?.[id]?.libraryID || 1,
         data: {},
       };
+    }
+
+    // Moving an item to Trash fires a "trash" event, not "delete". Propagate it
+    // so other devices remove the item too; a restore (untrash) re-adds it.
+    if (event === "trash") {
+      const item = Zotero.Items.get(id);
+      if (!item || item.deleted) {
+        return {
+          id: generateUUID(),
+          deviceId: this.stateManager.deviceId,
+          timestamp: Date.now(),
+          vectorClock: this.stateManager.incrementClock(),
+          type: "delete",
+          entityType: "item",
+          entityKey: item?.key || extraData?.[id]?.key || String(id),
+          libraryID: item?.libraryID || extraData?.[id]?.libraryID || 1,
+          data: {},
+        };
+      }
+      // Restored from Trash → re-add/modify.
+      return this.buildItemEvent("modify", id, extraData);
     }
 
     return null;
