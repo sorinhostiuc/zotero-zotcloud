@@ -11,6 +11,7 @@ export default defineConfig({
   name: pkg.config.addonName,
   id: pkg.config.addonID,
   namespace: pkg.config.addonRef,
+  updateURL: "https://github.com/sorinhostiuc/zotero-zotcloud/releases/latest/download/update.json",
   source: ["src", "addon"],
   dist: ".scaffold/build",
   build: {
